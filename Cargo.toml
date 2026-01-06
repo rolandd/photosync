@@ -1,0 +1,17 @@
+[package]
+name = "photosync"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.5.54", features = ["derive"] }
+crossbeam-channel = "0.5"
+nom-exif = "2.5.4"
+serde = { version = "1.0.228", features = ["derive"] }
+toml = "0.9.10"
+walkdir = "2"
+ratatui = "0.30.0"
+chrono = "0.4.42"
+dirs = "6.0.0"
+crossterm = "0.29.0"
