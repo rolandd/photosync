@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use chrono::{NaiveDate, NaiveDateTime};
-use crossbeam_channel::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, SyncSender as Sender};
 use nom_exif::{Exif, ExifIter, ExifTag, MediaParser, MediaSource};
 use walkdir::WalkDir;
 

@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use crossbeam_channel::Receiver;
+use std::sync::mpsc::Receiver;
 use crossterm::{
     ExecutableCommand,
     event::{self, Event, KeyCode},
