@@ -1,5 +1,7 @@
 # Photosync
 
+[![CI](https://github.com/rolandd/photosync/actions/workflows/ci.yml/badge.svg)](https://github.com/rolandd/photosync/actions/workflows/ci.yml)
+
 A personal Rust utility for syncing photos from camera memory cards to
 organized directories based on EXIF metadata.
 
