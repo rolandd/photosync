@@ -54,9 +54,11 @@ impl Drop for TerminalGuard {
 
 /// Application state for the TUI.
 pub struct App {
+    /// Aggregated summary statistics (shared logic with text mode).
+    summary: Summary,
+
     // Scan stage
     scanning_dir: Option<PathBuf>,
-    files_found: u64,
     scan_complete: bool,
 
     // Process stage
@@ -64,15 +66,7 @@ pub struct App {
 
     // Copy stage
     current_file: Option<(PathBuf, PathBuf, u64)>, // (src, dest, size)
-    files_copied: u64,
     files_to_copy: u64,
-    files_skipped: u64,
-    bytes_copied: u64,
-    total_duration: Duration,
-    files_errored: u64,
-
-    // Suspicious duplicates (same name, different content)
-    suspicious_duplicates: Vec<(PathBuf, PathBuf)>,
 
     // Speed calculation (rolling window)
     recent_copies: VecDeque<(u64, Duration)>, // (bytes, duration)
@@ -87,21 +81,15 @@ pub struct App {
 impl Default for App {
     fn default() -> Self {
         Self {
+            summary: Summary::default(),
             scanning_dir: None,
-            files_found: 0,
             scan_complete: false,
             files_with_exif: 0,
             current_file: None,
-            files_copied: 0,
             files_to_copy: 0,
-            files_skipped: 0,
-            bytes_copied: 0,
-            total_duration: Duration::ZERO,
             recent_copies: VecDeque::with_capacity(SPEED_WINDOW_SIZE),
             recent_items: VecDeque::with_capacity(MAX_RECENT_ITEMS),
             done: false,
-            files_errored: 0,
-            suspicious_duplicates: Vec::new(),
         }
     }
 }
@@ -134,26 +122,14 @@ impl App {
         }
     }
 
-    /// Build a Summary from current state.
-    fn summary(&self) -> Summary {
-        Summary {
-            files_copied: self.files_copied,
-            files_skipped: self.files_skipped,
-            files_errored: self.files_errored,
-            files_found: self.files_found,
-            bytes_copied: self.bytes_copied,
-            total_duration: self.total_duration,
-            suspicious_duplicates: self.suspicious_duplicates.clone(),
-        }
-    }
-
     fn handle_message(&mut self, msg: ProgressMsg) {
+        // Update common summary statistics; sets done flag on Done message
+        self.done = self.summary.update(&msg);
+
+        // Handle TUI-specific state
         match msg {
             ProgressMsg::ScanningDir(path) => {
                 self.scanning_dir = Some(path);
-            }
-            ProgressMsg::FileFound => {
-                self.files_found += 1;
             }
             ProgressMsg::ScanComplete => {
                 self.scan_complete = true;
@@ -170,12 +146,9 @@ impl App {
                 size,
                 duration,
             } => {
-                self.files_copied += 1;
-                self.bytes_copied += size;
-                self.total_duration += duration;
                 self.current_file = None;
 
-                // Add to rolling window
+                // Add to rolling window for speed calculation
                 if self.recent_copies.len() >= SPEED_WINDOW_SIZE {
                     self.recent_copies.pop_front();
                 }
@@ -193,7 +166,6 @@ impl App {
                 );
             }
             ProgressMsg::CopySkipped { filename } => {
-                self.files_skipped += 1;
                 self.files_to_copy = self.files_to_copy.saturating_sub(1);
                 self.add_recent(
                     format!("⚠ {}  (already exists)", filename),
@@ -201,13 +173,12 @@ impl App {
                 );
             }
             ProgressMsg::CopyError { filename, error } => {
-                self.files_errored += 1;
                 self.add_recent(
                     format!("✗ {}  {}", filename, error),
                     Style::default().fg(Color::Red),
                 );
             }
-            ProgressMsg::SuspiciousDuplicate { src, dest } => {
+            ProgressMsg::SuspiciousDuplicate { src, .. } => {
                 let filename = src
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
@@ -216,11 +187,8 @@ impl App {
                     format!("⚠ {}  (CONTENTS DIFFER!)", filename),
                     Style::default().fg(Color::LightRed),
                 );
-                self.suspicious_duplicates.push((src, dest));
             }
-            ProgressMsg::Done => {
-                self.done = true;
-            }
+            _ => {}
         }
     }
 }
@@ -253,7 +221,7 @@ fn ui(frame: &mut Frame, app: &App) {
     let scan_text = if app.scan_complete {
         format!(
             "Scan complete.  Files found: {}    With EXIF: {}",
-            app.files_found, app.files_with_exif
+            app.summary.files_found, app.files_with_exif
         )
     } else {
         let dir = app
@@ -263,7 +231,7 @@ fn ui(frame: &mut Frame, app: &App) {
             .unwrap_or_else(|| "...".to_string());
         format!(
             "Scanning: {}  Files: {}  EXIF: {}",
-            dir, app.files_found, app.files_with_exif
+            dir, app.summary.files_found, app.files_with_exif
         )
     };
     let scan_para = Paragraph::new(scan_text).style(Style::default().fg(Color::White));
@@ -291,11 +259,14 @@ fn ui(frame: &mut Frame, app: &App) {
 
     // Progress bar
     let total = app.files_to_copy.max(1);
-    let progress_ratio = app.files_copied as f64 / total as f64;
+    let progress_ratio = app.summary.files_copied as f64 / total as f64;
     let gauge = Gauge::default()
         .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
         .ratio(progress_ratio.min(1.0))
-        .label(format!("{} / {}", app.files_copied, app.files_to_copy));
+        .label(format!(
+            "{} / {}",
+            app.summary.files_copied, app.files_to_copy
+        ));
     frame.render_widget(gauge, chunks[2]);
 
     // Speed and stats
@@ -308,8 +279,8 @@ fn ui(frame: &mut Frame, app: &App) {
     let stats_text = format!(
         "Speed: {}    Copied: {}    Skipped: {} (already exist)",
         speed_text,
-        progress::format_bytes(app.bytes_copied),
-        app.files_skipped
+        progress::format_bytes(app.summary.bytes_copied),
+        app.summary.files_skipped
     );
     let stats_para = Paragraph::new(stats_text).style(Style::default().fg(Color::Gray));
     frame.render_widget(stats_para, chunks[3]);
@@ -386,7 +357,7 @@ pub fn run_tui(rx: Receiver<ProgressMsg>) -> Result<()> {
     // Print summary (terminal already restored by guard)
     // Explicitly drop guard first to restore terminal before printing
     drop(_guard);
-    println!("{}", app.summary());
+    println!("{}", app.summary);
 
     Ok(())
 }
@@ -398,8 +369,8 @@ mod tests {
     #[test]
     fn test_app_default() {
         let app = App::default();
-        assert_eq!(app.files_found, 0);
-        assert_eq!(app.files_copied, 0);
+        assert_eq!(app.summary.files_found, 0);
+        assert_eq!(app.summary.files_copied, 0);
         assert!(!app.done);
     }
 
@@ -446,7 +417,7 @@ mod tests {
     fn test_handle_message_file_found() {
         let mut app = App::default();
         app.handle_message(ProgressMsg::FileFound);
-        assert_eq!(app.files_found, 1);
+        assert_eq!(app.summary.files_found, 1);
     }
 
     #[test]
@@ -457,8 +428,8 @@ mod tests {
             size: 1024,
             duration: Duration::from_millis(100),
         });
-        assert_eq!(app.files_copied, 1);
-        assert_eq!(app.bytes_copied, 1024);
+        assert_eq!(app.summary.files_copied, 1);
+        assert_eq!(app.summary.bytes_copied, 1024);
         assert_eq!(app.recent_copies.len(), 1);
     }
 
@@ -473,15 +444,14 @@ mod tests {
     #[test]
     fn test_summary() {
         let mut app = App::default();
-        app.files_copied = 5;
-        app.files_skipped = 2;
-        app.files_found = 10;
-        app.bytes_copied = 1024 * 1024;
-        app.total_duration = Duration::from_secs(1);
+        app.summary.files_copied = 5;
+        app.summary.files_skipped = 2;
+        app.summary.files_found = 10;
+        app.summary.bytes_copied = 1024 * 1024;
+        app.summary.total_duration = Duration::from_secs(1);
 
-        let summary = app.summary();
-        assert_eq!(summary.files_copied, 5);
-        assert_eq!(summary.files_skipped, 2);
-        assert_eq!(summary.files_found, 10);
+        assert_eq!(app.summary.files_copied, 5);
+        assert_eq!(app.summary.files_skipped, 2);
+        assert_eq!(app.summary.files_found, 10);
     }
 }

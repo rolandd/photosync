@@ -32,12 +32,15 @@ fn run_text_mode(rx: Receiver<ProgressMsg>) -> Summary {
     let mut summary = Summary::default();
 
     for msg in rx {
-        match msg {
+        // Update summary statistics (returns true on Done)
+        if summary.update(&msg) {
+            break;
+        }
+
+        // Print progress (text-mode specific)
+        match &msg {
             ProgressMsg::ScanningDir(path) => {
                 println!("Scanning: {}", path.display());
-            }
-            ProgressMsg::FileFound => {
-                summary.files_found += 1;
             }
             ProgressMsg::ScanComplete => {
                 println!("Scan complete.");
@@ -53,28 +56,20 @@ fn run_text_mode(rx: Receiver<ProgressMsg>) -> Summary {
                 size,
                 duration,
             } => {
-                summary.files_copied += 1;
-                summary.bytes_copied += size;
-                summary.total_duration += duration;
-                let speed = progress::format_speed(size, duration);
-                let bytes = progress::format_bytes(size);
+                let speed = progress::format_speed(*size, *duration);
+                let bytes = progress::format_bytes(*size);
                 println!("  Done: {filename} ({bytes}, {speed})");
             }
             ProgressMsg::CopySkipped { filename } => {
-                summary.files_skipped += 1;
                 println!("  Skipped (exists): {filename}");
             }
             ProgressMsg::CopyError { filename, error } => {
-                summary.files_errored += 1;
                 eprintln!("  Error: {filename}: {error}");
             }
-            ProgressMsg::SuspiciousDuplicate { src, dest } => {
+            ProgressMsg::SuspiciousDuplicate { src, .. } => {
                 eprintln!("  WARNING: Suspicious duplicate: {}", src.display());
-                summary.suspicious_duplicates.push((src, dest));
             }
-            ProgressMsg::Done => {
-                break;
-            }
+            _ => {}
         }
     }
 

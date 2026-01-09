@@ -98,6 +98,37 @@ pub struct Summary {
     pub suspicious_duplicates: Vec<(PathBuf, PathBuf)>,
 }
 
+impl Summary {
+    /// Update summary statistics from a progress message.
+    ///
+    /// Returns `true` if this was a `Done` message, `false` otherwise.
+    pub fn update(&mut self, msg: &ProgressMsg) -> bool {
+        match msg {
+            ProgressMsg::FileFound => {
+                self.files_found += 1;
+            }
+            ProgressMsg::CopyComplete { size, duration, .. } => {
+                self.files_copied += 1;
+                self.bytes_copied += *size;
+                self.total_duration += *duration;
+            }
+            ProgressMsg::CopySkipped { .. } => {
+                self.files_skipped += 1;
+            }
+            ProgressMsg::CopyError { .. } => {
+                self.files_errored += 1;
+            }
+            ProgressMsg::SuspiciousDuplicate { src, dest } => {
+                self.suspicious_duplicates.push((src.clone(), dest.clone()));
+            }
+            ProgressMsg::Done => return true,
+            // ScanningDir, ScanComplete, ExifExtracted, CopyStarted - no summary update
+            _ => {}
+        }
+        false
+    }
+}
+
 impl fmt::Display for Summary {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let speed_str = if self.files_copied > 0 && self.total_duration.as_secs_f64() > 0.0 {
