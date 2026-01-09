@@ -292,7 +292,9 @@ fn compute_dest_dir(
 
     // Basic validation: Check for remaining curly braces which might indicate broken tags
     if path_str.contains('{') || path_str.contains('}') {
-        eprintln!("Warning: Malformed template or unknown tag in '{template}'. Result: '{path_str}'");
+        eprintln!(
+            "Warning: Malformed template or unknown tag in '{template}'. Result: '{path_str}'"
+        );
         return None;
     }
 
@@ -307,7 +309,9 @@ fn compute_dest_dir(
         if component == ".." || component == "." {
             // ".." is unsafe. "." is redundant but technically safe, but let's avoid it to be clean.
             if component == ".." {
-                eprintln!("Warning: Template resulted in '..' component, which is unsafe. Path: '{path_str}'");
+                eprintln!(
+                    "Warning: Template resulted in '..' component, which is unsafe. Path: '{path_str}'"
+                );
                 return None;
             }
             continue;
@@ -315,12 +319,14 @@ fn compute_dest_dir(
 
         // On Windows, checking for drive letters in components
         if component.contains(':') {
-             // Rudimentary check for drive letters or absolute paths injected via components
-             // (e.g. if replacement was "C:\Bad")
-             if Path::new(component).is_absolute() {
-                  eprintln!("Warning: Component '{component}' appears to be absolute. Path: '{path_str}'");
-                  return None;
-             }
+            // Rudimentary check for drive letters or absolute paths injected via components
+            // (e.g. if replacement was "C:\Bad")
+            if Path::new(component).is_absolute() {
+                eprintln!(
+                    "Warning: Component '{component}' appears to be absolute. Path: '{path_str}'"
+                );
+                return None;
+            }
         }
 
         dest_path.push(component);
@@ -492,7 +498,6 @@ mod tests {
         // Should return None because of ".."
         assert!(compute_dest_dir(&target, &config, "Model", date).is_none());
     }
-
 }
 
 /// Final handler for files with complete metadata.
