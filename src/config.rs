@@ -28,6 +28,10 @@ pub struct Args {
     /// Override the target directory (defaults to `$HOME/Pictures` or configured value)
     #[arg(long)]
     pub target: Option<PathBuf>,
+
+    /// Destination directory structure template (default: "{camera}/{year}/{month}/{day}")
+    #[arg(long)]
+    pub template: Option<String>,
 }
 
 /// Configuration file structure.
@@ -42,6 +46,9 @@ pub struct Config {
 
     /// Optional target directory override.
     pub target_dir: Option<PathBuf>,
+
+    /// Destination directory structure template.
+    pub dest_template: Option<String>,
 }
 
 /// Raw directories section from TOML.
@@ -49,6 +56,7 @@ pub struct Config {
 struct RawDirs {
     source: Option<PathBuf>,
     target: Option<PathBuf>,
+    template: Option<String>,
 }
 
 /// Raw configuration as deserialized from TOML.
@@ -116,6 +124,7 @@ fn parse_config_str(contents: &str) -> Result<Config> {
         camera_dirs,
         source_dir: raw.dirs.source,
         target_dir: raw.dirs.target,
+        dest_template: raw.dirs.template,
     })
 }
 
@@ -141,6 +150,7 @@ impl Config {
             camera_dirs,
             source_dir: None,
             target_dir: None,
+            dest_template: None,
         }
     }
 
@@ -253,6 +263,7 @@ mod tests {
         // Should use all defaults
         assert!(config.source_dir.is_none());
         assert!(config.target_dir.is_none());
+        assert!(config.dest_template.is_none());
         assert!(!config.camera_dirs.is_empty()); // default cameras
         assert!(config.get_dest_dir("Canon EOS R6").is_some());
     }
@@ -263,6 +274,7 @@ mod tests {
 [dirs]
 source = "/media/test"
 target = "/home/test/Pictures"
+template = "{camera}/{year}"
 "#;
         let config = parse_config_str(toml).unwrap();
         assert_eq!(config.source_dir, Some(PathBuf::from("/media/test")));
@@ -270,6 +282,7 @@ target = "/home/test/Pictures"
             config.target_dir,
             Some(PathBuf::from("/home/test/Pictures"))
         );
+        assert_eq!(config.dest_template, Some("{camera}/{year}".to_string()));
         // Should still have default cameras
         assert!(config.get_dest_dir("Canon EOS R6").is_some());
     }

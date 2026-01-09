@@ -74,7 +74,11 @@ fn run_text_mode(rx: Receiver<ProgressMsg>) -> Summary {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let config = load_config()?;
+    let mut config = load_config()?;
+
+    if let Some(t) = args.template {
+        config.dest_template = Some(t);
+    }
 
     // Determine paths
     let source_dir = config.source_dir(args.source.as_ref())?;
