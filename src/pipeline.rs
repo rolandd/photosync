@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use chrono::{NaiveDate, NaiveDateTime};
-use crossbeam_channel::{Receiver, Sender};
 use nom_exif::{Exif, ExifIter, ExifTag, MediaParser, MediaSource};
+use std::sync::mpsc::{Receiver, SyncSender};
 use walkdir::WalkDir;
 
 use crate::config::Config;
@@ -22,12 +22,16 @@ pub struct FileInfo {
 }
 
 /// Helper to send progress messages, suppressing errors in release mode (or logging via side channel if needed).
-fn send_progress(tx: &Sender<ProgressMsg>, msg: ProgressMsg) {
+fn send_progress(tx: &SyncSender<ProgressMsg>, msg: ProgressMsg) {
     let _ = tx.send(msg);
 }
 
 /// Helper to report errors to the UI
-fn report_error(tx: &Sender<ProgressMsg>, filename: impl Into<String>, error: impl Into<String>) {
+fn report_error(
+    tx: &SyncSender<ProgressMsg>,
+    filename: impl Into<String>,
+    error: impl Into<String>,
+) {
     send_progress(
         tx,
         ProgressMsg::CopyError {
@@ -40,7 +44,11 @@ fn report_error(tx: &Sender<ProgressMsg>, filename: impl Into<String>, error: im
 /// Discovers all files under source directories (recursively)
 /// and sends their paths through the provided channel.
 #[allow(clippy::needless_pass_by_value)]
-pub fn file_walker(source_dir: PathBuf, tx: Sender<PathBuf>, progress_tx: Sender<ProgressMsg>) {
+pub fn file_walker(
+    source_dir: PathBuf,
+    tx: SyncSender<PathBuf>,
+    progress_tx: SyncSender<ProgressMsg>,
+) {
     // Recursively walk the provided source directory to find all files.
     // This allows flexible usage: the user can point to a root media folder (e.g., /media/user)
     // or deeper into a specific card structure (e.g., /media/user/EOS_DIGITAL/DCIM).
@@ -71,8 +79,8 @@ pub fn file_walker(source_dir: PathBuf, tx: Sender<PathBuf>, progress_tx: Sender
 #[allow(clippy::needless_pass_by_value)]
 pub fn file_processor(
     rx: Receiver<PathBuf>,
-    tx: Sender<FileInfo>,
-    progress_tx: Sender<ProgressMsg>,
+    tx: SyncSender<FileInfo>,
+    progress_tx: SyncSender<ProgressMsg>,
 ) {
     let mut parser = MediaParser::new();
 
@@ -235,7 +243,7 @@ pub fn file_handler(
     target_dir: PathBuf,
     config: Config,
     dry_run: bool,
-    progress_tx: Sender<ProgressMsg>,
+    progress_tx: SyncSender<ProgressMsg>,
 ) {
     for info in rx {
         let Some(camera_dir) = config.get_dest_dir(&info.model) else {

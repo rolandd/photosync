@@ -12,7 +12,7 @@ use std::thread;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use crossbeam_channel::bounded;
+use std::sync::mpsc::{self, Receiver};
 
 mod config;
 mod pipeline;
@@ -28,7 +28,7 @@ use progress::{ProgressMsg, Summary};
 const CHANNEL_BUFFER_SIZE: usize = 1024;
 
 /// Run the text-mode progress display.
-fn run_text_mode(rx: crossbeam_channel::Receiver<ProgressMsg>) -> Summary {
+fn run_text_mode(rx: Receiver<ProgressMsg>) -> Summary {
     let mut summary = Summary::default();
 
     for msg in rx {
@@ -92,12 +92,12 @@ fn main() -> Result<()> {
     eprintln!("Target: {}", target_dir.display());
 
     // Create pipeline channels
-    let (walker_tx, processor_rx) = bounded::<PathBuf>(CHANNEL_BUFFER_SIZE);
-    let (processor_tx, handler_rx) = bounded::<FileInfo>(CHANNEL_BUFFER_SIZE);
+    let (walker_tx, processor_rx) = mpsc::sync_channel::<PathBuf>(CHANNEL_BUFFER_SIZE);
+    let (processor_tx, handler_rx) = mpsc::sync_channel::<FileInfo>(CHANNEL_BUFFER_SIZE);
 
     // Create progress channel for TUI
     // Note: if buffer is full, workers block.
-    let (progress_tx, progress_rx) = bounded::<ProgressMsg>(CHANNEL_BUFFER_SIZE);
+    let (progress_tx, progress_rx) = mpsc::sync_channel::<ProgressMsg>(CHANNEL_BUFFER_SIZE);
 
     // Clone senders for each worker
     let walker_progress = progress_tx.clone();

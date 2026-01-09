@@ -15,7 +15,6 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use crossbeam_channel::Receiver;
 use crossterm::{
     ExecutableCommand,
     event::{self, Event, KeyCode},
@@ -25,6 +24,7 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Gauge, List, ListItem, Paragraph},
 };
+use std::sync::mpsc::Receiver;
 
 use crate::progress::{self, ProgressMsg, Summary};
 
