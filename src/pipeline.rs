@@ -274,16 +274,7 @@ fn compute_dest_dir(
 ) -> Option<PathBuf> {
     let camera_dir_name = config.get_dest_dir(model)?;
 
-    // Sanity check on camera directory name from config
-    let camera_path = Path::new(camera_dir_name);
-    if camera_path.is_absolute()
-        || camera_path
-            .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir))
-    {
-        eprintln!("Warning: Camera directory mapping '{camera_dir_name}' is unsafe (absolute or contains '..'). Skipping.");
-        return None;
-    }
+    // Note: camera_dir_name is already validated when loading config (no absolute paths or '..')
 
     let template = config
         .dest_template
@@ -502,29 +493,6 @@ mod tests {
         assert!(compute_dest_dir(&target, &config, "Model", date).is_none());
     }
 
-    #[test]
-    fn test_compute_dest_dir_absolute_camera_dir() {
-        let mut config = Config::default();
-        // This should be rejected
-        config.camera_dirs = vec![("Model".to_string(), "/absolute/path".to_string())];
-
-        let target = PathBuf::from("/target");
-        let date = NaiveDate::from_ymd_opt(2023, 10, 25).unwrap();
-
-        assert!(compute_dest_dir(&target, &config, "Model", date).is_none());
-    }
-
-    #[test]
-    fn test_compute_dest_dir_parent_traversal_camera_dir() {
-        let mut config = Config::default();
-        // This should be rejected
-        config.camera_dirs = vec![("Model".to_string(), "../relative".to_string())];
-
-        let target = PathBuf::from("/target");
-        let date = NaiveDate::from_ymd_opt(2023, 10, 25).unwrap();
-
-        assert!(compute_dest_dir(&target, &config, "Model", date).is_none());
-    }
 }
 
 /// Final handler for files with complete metadata.

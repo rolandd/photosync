@@ -3,7 +3,7 @@
 
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -116,7 +116,26 @@ fn parse_config_str(contents: &str) -> Result<Config> {
     let mut camera_dirs: Vec<_> = if raw.cameras.is_empty() {
         default_camera_dirs()
     } else {
-        raw.cameras.into_iter().collect()
+        // Validate and collect user-provided camera mappings
+        raw.cameras
+            .into_iter()
+            .filter(|(model, dest_dir)| {
+                let path = Path::new(dest_dir);
+                if path.is_absolute()
+                    || path
+                        .components()
+                        .any(|c| matches!(c, std::path::Component::ParentDir))
+                {
+                    eprintln!(
+                        "Warning: Camera directory mapping '{}' -> '{}' is unsafe (absolute or contains '..'). Skipping.",
+                        model, dest_dir
+                    );
+                    false
+                } else {
+                    true
+                }
+            })
+            .collect()
     };
     sort_camera_dirs(&mut camera_dirs);
 
@@ -357,5 +376,21 @@ target = "/archive/photos"
         let config = parse_config_str(toml).unwrap();
         // Longer match should win
         assert_eq!(config.get_dest_dir("Canon EOS R6"), Some("long-match"));
+    }
+
+    #[test]
+    fn test_parse_config_rejects_unsafe_paths() {
+        let toml = r#"
+[cameras]
+"Safe" = "safe-dir"
+"Unsafe1" = "/abs/path"
+"Unsafe2" = "../parent"
+"Unsafe3" = "a/../../b"
+"#;
+        let config = parse_config_str(toml).unwrap();
+        assert!(config.get_dest_dir("Safe").is_some());
+        assert!(config.get_dest_dir("Unsafe1").is_none());
+        assert!(config.get_dest_dir("Unsafe2").is_none());
+        assert!(config.get_dest_dir("Unsafe3").is_none());
     }
 }
