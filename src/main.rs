@@ -4,7 +4,7 @@
 //! Photosync: Sync photos from camera memory cards to organized directories.
 //!
 //! This application scans source directories (default: `/media/<username>`) for photos,
-//! extracts EXIF metadata, and copies files to `~/Pictures/<camera_dir>/YYYY/MM/DD/`.
+//! extracts EXIF metadata, and copies files to the user's picture directory (e.g. `~/Pictures` or `XDG_PICTURES_DIR` on Linux) under `<camera_dir>/YYYY/MM/DD/`.
 
 use std::io::IsTerminal;
 use std::sync::mpsc::{self, Receiver};

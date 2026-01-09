@@ -25,7 +25,7 @@ pub struct Args {
     #[arg(long)]
     pub source: Option<PathBuf>,
 
-    /// Override the target directory (defaults to `$HOME/Pictures` or configured value)
+    /// Override the target directory (defaults to user's picture directory, e.g. `$HOME/Pictures` or `XDG_PICTURES_DIR` on Linux)
     #[arg(long)]
     pub target: Option<PathBuf>,
 }
@@ -165,7 +165,7 @@ impl Config {
     }
 
     /// Resolve the effective target directory.
-    /// Priority: CLI arg > Config file > Default ($HOME/Pictures)
+    /// Priority: CLI arg > Config file > Default (User's picture directory)
     pub fn target_dir(&self, cli_override: Option<&PathBuf>) -> Result<PathBuf> {
         Self::resolve_dir(cli_override, &self.target_dir, || {
             dirs::picture_dir().context("Could not determine user Pictures directory")
