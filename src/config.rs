@@ -158,30 +158,33 @@ impl Config {
     /// Resolve the effective source directory.
     /// Priority: CLI arg > Config file > Default (/media/$USER)
     pub fn source_dir(&self, cli_override: Option<&PathBuf>) -> Result<PathBuf> {
-        if let Some(path) = cli_override {
-            return Ok(path.clone());
-        }
-        if let Some(path) = &self.source_dir {
-            return Ok(path.clone());
-        }
-
-        // Default: /media/$USER
-        let user = env::var("USER").context("USER environment variable not set")?;
-        Ok(PathBuf::from("/media").join(user))
+        Self::resolve_dir(cli_override, &self.source_dir, || {
+            let user = env::var("USER").context("USER environment variable not set")?;
+            Ok(PathBuf::from("/media").join(user))
+        })
     }
 
     /// Resolve the effective target directory.
     /// Priority: CLI arg > Config file > Default ($HOME/Pictures)
     pub fn target_dir(&self, cli_override: Option<&PathBuf>) -> Result<PathBuf> {
+        Self::resolve_dir(cli_override, &self.target_dir, || {
+            dirs::picture_dir().context("Could not determine user Pictures directory")
+        })
+    }
+
+    /// Helper: resolve a directory with CLI > config > default priority.
+    fn resolve_dir(
+        cli_override: Option<&PathBuf>,
+        config_value: &Option<PathBuf>,
+        default: impl FnOnce() -> Result<PathBuf>,
+    ) -> Result<PathBuf> {
         if let Some(path) = cli_override {
             return Ok(path.clone());
         }
-        if let Some(path) = &self.target_dir {
+        if let Some(path) = config_value {
             return Ok(path.clone());
         }
-
-        // Default: $HOME/Pictures
-        dirs::picture_dir().context("Could not determine user Pictures directory")
+        default()
     }
 }
 
