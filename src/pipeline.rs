@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2026 Roland Dreier <roland@kernel.org>
 
-use std::fs;
-use std::path::PathBuf;
+use std::fs::{self, File};
+use std::io::{self, BufReader, Read};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use chrono::{NaiveDate, NaiveDateTime};
@@ -39,6 +40,43 @@ fn report_error(
             error: error.into(),
         },
     );
+}
+
+/// Chunk size for file comparison (128 KB).
+/// Balances syscall overhead vs. memory usage.
+const FILE_COMPARE_CHUNK_SIZE: usize = 128 * 1024;
+
+/// Compare two files for equality.
+///
+/// Returns `Ok(true)` if files have identical contents, `Ok(false)` otherwise.
+/// Uses size comparison first (fast path), then chunked byte comparison.
+fn files_are_equal(path1: &Path, path2: &Path) -> io::Result<bool> {
+    // Fast path: compare sizes first
+    let meta1 = fs::metadata(path1)?;
+    let meta2 = fs::metadata(path2)?;
+    if meta1.len() != meta2.len() {
+        return Ok(false);
+    }
+
+    // Chunked byte comparison
+    let mut reader1 = BufReader::with_capacity(FILE_COMPARE_CHUNK_SIZE, File::open(path1)?);
+    let mut reader2 = BufReader::with_capacity(FILE_COMPARE_CHUNK_SIZE, File::open(path2)?);
+
+    let mut buf1 = vec![0u8; FILE_COMPARE_CHUNK_SIZE];
+    let mut buf2 = vec![0u8; FILE_COMPARE_CHUNK_SIZE];
+
+    loop {
+        let n1 = reader1.read(&mut buf1)?;
+        let n2 = reader2.read(&mut buf2)?;
+
+        if n1 != n2 || buf1[..n1] != buf2[..n2] {
+            return Ok(false);
+        }
+
+        if n1 == 0 {
+            return Ok(true);
+        }
+    }
 }
 
 /// Discovers all files under source directories (recursively)
@@ -181,6 +219,18 @@ fn parse_exif_date(s: &str) -> Option<NaiveDate> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use std::path::Path;
+
+    /// Helper to create a test file with given content.
+    fn create_test_file(dir: &Path, name: &str, content: &[u8]) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(content)
+            .unwrap();
+        path
+    }
 
     #[test]
     fn test_parse_exif_date_standard() {
@@ -233,6 +283,42 @@ mod tests {
         // "0000:00:00" is strictly invalid now thanks to from_ymd_opt
         assert_eq!(parse_exif_date("0000:00:00 00:00:00"), None);
     }
+
+    #[test]
+    fn test_files_are_equal_identical() {
+        let dir = tempfile::tempdir().unwrap();
+        let file1 = create_test_file(dir.path(), "file1.txt", b"Hello, world!");
+        let file2 = create_test_file(dir.path(), "file2.txt", b"Hello, world!");
+
+        assert!(files_are_equal(&file1, &file2).unwrap());
+    }
+
+    #[test]
+    fn test_files_are_equal_different_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let file1 = create_test_file(dir.path(), "file1.txt", b"short");
+        let file2 = create_test_file(dir.path(), "file2.txt", b"much longer content");
+
+        assert!(!files_are_equal(&file1, &file2).unwrap());
+    }
+
+    #[test]
+    fn test_files_are_equal_same_size_different_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let file1 = create_test_file(dir.path(), "file1.txt", b"AAAA");
+        let file2 = create_test_file(dir.path(), "file2.txt", b"BBBB");
+
+        assert!(!files_are_equal(&file1, &file2).unwrap());
+    }
+
+    #[test]
+    fn test_files_are_equal_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file1 = create_test_file(dir.path(), "exists.txt", b"");
+        let file2 = dir.path().join("missing.txt");
+
+        assert!(files_are_equal(&file1, &file2).is_err());
+    }
 }
 
 /// Final handler for files with complete metadata.
@@ -275,6 +361,28 @@ pub fn file_handler(
         let dest_path = dest_dir.join(filename);
 
         if dest_path.exists() {
+            // Check if contents are the same
+            let is_same = files_are_equal(&info.path, &dest_path).unwrap_or_else(|e| {
+                // Log error and assume different (safer)
+                report_error(
+                    &progress_tx,
+                    filename_str.clone(),
+                    format!("Error comparing files: {e}"),
+                );
+                false
+            });
+
+            if !is_same {
+                // Suspicious: same name but different contents
+                send_progress(
+                    &progress_tx,
+                    ProgressMsg::SuspiciousDuplicate {
+                        src: info.path.clone(),
+                        dest: dest_path.clone(),
+                    },
+                );
+            }
+
             send_progress(
                 &progress_tx,
                 ProgressMsg::CopySkipped {

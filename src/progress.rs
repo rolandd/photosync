@@ -47,6 +47,11 @@ pub enum ProgressMsg {
         filename: String,
         error: String,
     },
+    /// File with same name exists at destination but has different contents.
+    SuspiciousDuplicate {
+        src: PathBuf,
+        dest: PathBuf,
+    },
 
     // Sentinel - all workers done
     Done,
@@ -89,6 +94,8 @@ pub struct Summary {
     pub files_found: u64,
     pub bytes_copied: u64,
     pub total_duration: Duration,
+    /// Files that matched by name but had different contents.
+    pub suspicious_duplicates: Vec<(PathBuf, PathBuf)>,
 }
 
 impl fmt::Display for Summary {
@@ -108,7 +115,22 @@ impl fmt::Display for Summary {
             f,
             "Summary: {} copied, {} skipped (duplicates), {} total files found{}{}",
             self.files_copied, self.files_skipped, self.files_found, error_str, speed_str
-        )
+        )?;
+
+        // Print suspicious duplicates report
+        if !self.suspicious_duplicates.is_empty() {
+            writeln!(f)?;
+            writeln!(
+                f,
+                "\nWARNING: {} suspicious duplicate(s) found (same name, different contents):",
+                self.suspicious_duplicates.len()
+            )?;
+            for (src, dest) in &self.suspicious_duplicates {
+                writeln!(f, "  Source: {}", src.display())?;
+                writeln!(f, "    Dest: {}", dest.display())?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -165,6 +187,7 @@ mod tests {
             files_found: 10,
             bytes_copied: 50 * 1024 * 1024,
             total_duration: Duration::from_secs(5),
+            ..Default::default()
         };
         let output = summary.to_string();
         assert!(output.contains("5 copied"));
@@ -183,6 +206,7 @@ mod tests {
             files_found: 8,
             bytes_copied: 30 * 1024 * 1024,
             total_duration: Duration::from_secs(3),
+            ..Default::default()
         };
         let output = summary.to_string();
         assert!(output.contains("3 copied"));
@@ -198,5 +222,30 @@ mod tests {
         assert!(output.contains("0 copied"));
         assert!(!output.contains("overall")); // No speed shown when no copies
         assert!(!output.contains("error")); // No errors shown when count is 0
+    }
+
+    #[test]
+    fn test_summary_display_with_suspicious_duplicates() {
+        let summary = Summary {
+            files_copied: 2,
+            files_skipped: 3,
+            suspicious_duplicates: vec![
+                (
+                    PathBuf::from("/src/IMG_001.jpg"),
+                    PathBuf::from("/dest/IMG_001.jpg"),
+                ),
+                (
+                    PathBuf::from("/src/IMG_002.jpg"),
+                    PathBuf::from("/dest/IMG_002.jpg"),
+                ),
+            ],
+            ..Default::default()
+        };
+        let output = summary.to_string();
+        assert!(output.contains("2 suspicious duplicate(s)"));
+        assert!(output.contains("same name, different contents"));
+        assert!(output.contains("/src/IMG_001.jpg"));
+        assert!(output.contains("/dest/IMG_001.jpg"));
+        assert!(output.contains("/src/IMG_002.jpg"));
     }
 }

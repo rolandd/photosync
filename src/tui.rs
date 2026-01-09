@@ -71,6 +71,9 @@ pub struct App {
     total_duration: Duration,
     files_errored: u64,
 
+    // Suspicious duplicates (same name, different content)
+    suspicious_duplicates: Vec<(PathBuf, PathBuf)>,
+
     // Speed calculation (rolling window)
     recent_copies: VecDeque<(u64, Duration)>, // (bytes, duration)
 
@@ -98,6 +101,7 @@ impl Default for App {
             recent_items: VecDeque::with_capacity(MAX_RECENT_ITEMS),
             done: false,
             files_errored: 0,
+            suspicious_duplicates: Vec::new(),
         }
     }
 }
@@ -139,6 +143,7 @@ impl App {
             files_found: self.files_found,
             bytes_copied: self.bytes_copied,
             total_duration: self.total_duration,
+            suspicious_duplicates: self.suspicious_duplicates.clone(),
         }
     }
 
@@ -201,6 +206,17 @@ impl App {
                     format!("✗ {}  {}", filename, error),
                     Style::default().fg(Color::Red),
                 );
+            }
+            ProgressMsg::SuspiciousDuplicate { src, dest } => {
+                let filename = src
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| src.display().to_string());
+                self.add_recent(
+                    format!("⚠ {}  (CONTENTS DIFFER!)", filename),
+                    Style::default().fg(Color::LightRed),
+                );
+                self.suspicious_duplicates.push((src, dest));
             }
             ProgressMsg::Done => {
                 self.done = true;

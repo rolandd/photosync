@@ -68,6 +68,10 @@ fn run_text_mode(rx: Receiver<ProgressMsg>) -> Summary {
                 summary.files_errored += 1;
                 eprintln!("  Error: {filename}: {error}");
             }
+            ProgressMsg::SuspiciousDuplicate { src, dest } => {
+                eprintln!("  WARNING: Suspicious duplicate: {}", src.display());
+                summary.suspicious_duplicates.push((src, dest));
+            }
             ProgressMsg::Done => {
                 break;
             }
