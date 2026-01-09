@@ -7,12 +7,10 @@
 //! extracts EXIF metadata, and copies files to `~/Pictures/<camera_dir>/YYYY/MM/DD/`.
 
 use std::io::IsTerminal;
-use std::path::PathBuf;
-use std::thread;
+use std::sync::mpsc::{self, Receiver};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use std::sync::mpsc::{self, Receiver};
 
 mod config;
 mod pipeline;
@@ -20,12 +18,10 @@ mod progress;
 mod tui;
 
 use config::{Args, load_config};
-use pipeline::{FileInfo, file_handler, file_processor, file_walker};
 use progress::{ProgressMsg, Summary};
 
-/// Channel buffer size for pipeline stages.
-/// Large enough to allow burst handling while bounding memory.
-const CHANNEL_BUFFER_SIZE: usize = 1024;
+/// Channel buffer size for the progress channel.
+const PROGRESS_BUFFER_SIZE: usize = 1024;
 
 /// Run the text-mode progress display.
 fn run_text_mode(rx: Receiver<ProgressMsg>) -> Summary {
@@ -90,61 +86,13 @@ fn main() -> Result<()> {
     eprintln!("Source: {}", source_dir.display());
     eprintln!("Target: {}", target_dir.display());
 
-    // Create pipeline channels
-    let (walker_tx, processor_rx) = mpsc::sync_channel::<PathBuf>(CHANNEL_BUFFER_SIZE);
-    let (processor_tx, handler_rx) = mpsc::sync_channel::<FileInfo>(CHANNEL_BUFFER_SIZE);
-
     // Create progress channel for TUI
     // Note: if buffer is full, workers block.
-    let (progress_tx, progress_rx) = mpsc::sync_channel::<ProgressMsg>(CHANNEL_BUFFER_SIZE);
+    let (progress_tx, progress_rx) = mpsc::sync_channel::<ProgressMsg>(PROGRESS_BUFFER_SIZE);
 
-    // Clone senders for each worker
-    let walker_progress = progress_tx.clone();
-    let processor_progress = progress_tx.clone();
-    let handler_progress = progress_tx.clone();
-
-    // Spawn the producer thread (file walker)
-    let walker_handle = thread::spawn(move || {
-        file_walker(source_dir, walker_tx, walker_progress);
-    });
-
-    // Spawn the processor thread (EXIF extraction)
-    let processor_handle = thread::spawn(move || {
-        file_processor(processor_rx, processor_tx, processor_progress);
-    });
-
-    // Spawn the handler thread (final processing)
-    // We clone config for the handler since it needs to look up camera dirs
-    let handler_config = config.clone();
-    let handler_handle = thread::spawn(move || {
-        file_handler(
-            handler_rx,
-            target_dir,
-            handler_config,
-            dry_run,
-            handler_progress,
-        );
-    });
-
-    // Spawn a thread to send Done after all workers finish
-    let done_tx = progress_tx;
-    let done_handle = thread::spawn(move || {
-        // Collect thread handles and their names for error reporting
-        let handles = [
-            (walker_handle, "Walker"),
-            (processor_handle, "Processor"),
-            (handler_handle, "Handler"),
-        ];
-
-        for (handle, name) in handles {
-            if let Err(e) = handle.join() {
-                eprintln!("{name} thread panicked: {e:?}");
-            }
-        }
-
-        // Send Done (ignoring send errors if receiver is gone)
-        let _ = done_tx.send(ProgressMsg::Done);
-    });
+    // Spawn the pipeline (walker, processor, handler, and monitor)
+    let monitor_handle =
+        pipeline::spawn_pipeline(source_dir, target_dir, config, dry_run, progress_tx);
 
     // Run TUI or text mode
     if use_tui {
@@ -154,6 +102,7 @@ fn main() -> Result<()> {
         println!("{summary}");
     }
 
-    done_handle.join().expect("Done thread panicked");
+    // Wait for the monitor thread to finish (which implies all workers are done)
+    monitor_handle.join().expect("Monitor thread panicked");
     Ok(())
 }

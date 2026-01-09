@@ -1,18 +1,19 @@
-// SPDX-License-Identifier: MIT
-// Copyright 2026 Roland Dreier <roland@kernel.org>
-
 use std::fs::{self, File};
 use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use chrono::{NaiveDate, NaiveDateTime};
 use nom_exif::{Exif, ExifIter, ExifTag, MediaParser, MediaSource};
-use std::sync::mpsc::{Receiver, SyncSender};
 use walkdir::WalkDir;
 
 use crate::config::Config;
 use crate::progress::ProgressMsg;
+
+/// Channel buffer size for pipeline stages.
+const CHANNEL_BUFFER_SIZE: usize = 1024;
 
 /// Represents a file with complete EXIF metadata.
 #[derive(Debug)]
@@ -22,7 +23,76 @@ pub struct FileInfo {
     pub date: NaiveDate,
 }
 
-/// Helper to send progress messages, suppressing errors in release mode (or logging via side channel if needed).
+/// Spawns the processing pipeline threads.
+///
+/// This function sets up the channels and spawns the worker threads:
+/// 1. Walker: Scans the source directory.
+/// 2. Processor: Extracts EXIF data.
+/// 3. Handler: Copies files to the destination.
+/// 4. Monitor: Waits for all workers to finish and sends the Done signal.
+///
+/// Returns the `JoinHandle` of the monitor thread.
+pub fn spawn_pipeline(
+    source_dir: PathBuf,
+    target_dir: PathBuf,
+    config: Config,
+    dry_run: bool,
+    progress_tx: SyncSender<ProgressMsg>,
+) -> thread::JoinHandle<()> {
+    // Create pipeline channels
+    let (walker_tx, processor_rx) = mpsc::sync_channel::<PathBuf>(CHANNEL_BUFFER_SIZE);
+    let (processor_tx, handler_rx) = mpsc::sync_channel::<FileInfo>(CHANNEL_BUFFER_SIZE);
+
+    // Clone senders for each worker
+    let walker_progress = progress_tx.clone();
+    let processor_progress = progress_tx.clone();
+    let handler_progress = progress_tx.clone();
+
+    // Spawn the producer thread (file walker)
+    let walker_handle = thread::spawn(move || {
+        file_walker(source_dir, walker_tx, walker_progress);
+    });
+
+    // Spawn the processor thread (EXIF extraction)
+    let processor_handle = thread::spawn(move || {
+        file_processor(processor_rx, processor_tx, processor_progress);
+    });
+
+    // Spawn the handler thread (final processing)
+    // We clone config for the handler since it needs to look up camera dirs
+    let handler_config = config.clone();
+    let handler_handle = thread::spawn(move || {
+        file_handler(
+            handler_rx,
+            target_dir,
+            handler_config,
+            dry_run,
+            handler_progress,
+        );
+    });
+
+    // Spawn a thread to send Done after all workers finish
+    let done_tx = progress_tx;
+    thread::spawn(move || {
+        // Collect thread handles and their names for error reporting
+        let handles = [
+            (walker_handle, "Walker"),
+            (processor_handle, "Processor"),
+            (handler_handle, "Handler"),
+        ];
+
+        for (handle, name) in handles {
+            if let Err(e) = handle.join() {
+                eprintln!("{name} thread panicked: {e:?}");
+            }
+        }
+
+        // Send Done (ignoring send errors if receiver is gone)
+        let _ = done_tx.send(ProgressMsg::Done);
+    })
+}
+
+/// Helper to send progress messages, suppressing errors.
 fn send_progress(tx: &SyncSender<ProgressMsg>, msg: ProgressMsg) {
     let _ = tx.send(msg);
 }
@@ -43,13 +113,9 @@ fn report_error(
 }
 
 /// Chunk size for file comparison (128 KB).
-/// Balances syscall overhead vs. memory usage.
 const FILE_COMPARE_CHUNK_SIZE: usize = 128 * 1024;
 
 /// Compare two files for equality.
-///
-/// Returns `Ok(true)` if files have identical contents, `Ok(false)` otherwise.
-/// Uses size comparison first (fast path), then chunked byte comparison.
 fn files_are_equal(path1: &Path, path2: &Path) -> io::Result<bool> {
     // Fast path: compare sizes first
     let meta1 = fs::metadata(path1)?;
@@ -79,20 +145,8 @@ fn files_are_equal(path1: &Path, path2: &Path) -> io::Result<bool> {
     }
 }
 
-/// Discovers all files under source directories (recursively)
-/// and sends their paths through the provided channel.
-#[allow(clippy::needless_pass_by_value)]
-pub fn file_walker(
-    source_dir: PathBuf,
-    tx: SyncSender<PathBuf>,
-    progress_tx: SyncSender<ProgressMsg>,
-) {
-    // Recursively walk the provided source directory to find all files.
-    // This allows flexible usage: the user can point to a root media folder (e.g., /media/user)
-    // or deeper into a specific card structure (e.g., /media/user/EOS_DIGITAL/DCIM).
-    // Efficiency note: If the user provides a high-level root with many non-photo files,
-    // this will iterate them all. Future optimizations could check for "DCIM" subdirectories.
-
+/// Discovers all files under source directories.
+fn file_walker(source_dir: PathBuf, tx: SyncSender<PathBuf>, progress_tx: SyncSender<ProgressMsg>) {
     send_progress(&progress_tx, ProgressMsg::ScanningDir(source_dir.clone()));
 
     for walk_entry in WalkDir::new(&source_dir)
@@ -113,9 +167,7 @@ pub fn file_walker(
 }
 
 /// Processes file paths received from the channel.
-/// Extracts EXIF data and forwards files with complete metadata to the output channel.
-#[allow(clippy::needless_pass_by_value)]
-pub fn file_processor(
+fn file_processor(
     rx: Receiver<PathBuf>,
     tx: SyncSender<FileInfo>,
     progress_tx: SyncSender<ProgressMsg>,
@@ -143,7 +195,6 @@ pub fn file_processor(
             .and_then(|v| v.as_str())
             .map(ToString::to_string);
 
-        // Robust date parsing using chrono
         let date = exif
             .get(ExifTag::DateTimeOriginal)
             .and_then(|v| parse_exif_date(&v.to_string()));
@@ -165,7 +216,6 @@ pub fn file_processor(
 }
 
 /// Parses an EXIF date string into a `NaiveDate`.
-/// Supports standard EXIF format (YYYY:MM:DD HH:MM:SS) and common variations.
 fn parse_exif_date(s: &str) -> Option<NaiveDate> {
     let clean_s = s.trim();
 
@@ -182,23 +232,21 @@ fn parse_exif_date(s: &str) -> Option<NaiveDate> {
 
     for fmt in formats {
         if let Ok(dt) = NaiveDateTime::parse_from_str(clean_s, fmt) {
-            return Some(dt.date()); // Convert NaiveDateTime to NaiveDate
+            return Some(dt.date());
         }
         if let Ok(dt) = NaiveDate::parse_from_str(clean_s, fmt) {
             return Some(dt);
         }
     }
 
-    // Fallback parsing for weird separators or non-standard formats
+    // Fallback parsing for weird separators
     if s.len() >= 10 {
         let date_part = &s[..10];
         let normalized = date_part.replace([':', '-'], "/");
 
-        // Validation: should be YYYY/MM/DD
         if normalized.chars().filter(|c| *c == '/').count() == 2
             && normalized.chars().all(|c| c.is_ascii_digit() || c == '/')
         {
-            // Semantic check and conversion
             let parts: Vec<&str> = normalized.split('/').collect();
             if parts.len() == 3
                 && let (Ok(y), Ok(m), Ok(d)) = (
@@ -214,6 +262,24 @@ fn parse_exif_date(s: &str) -> Option<NaiveDate> {
     }
 
     None
+}
+
+/// Helper to compute the destination directory for a file.
+/// Returns `None` if the camera model is unknown.
+fn compute_dest_dir(
+    target_dir: &Path,
+    config: &Config,
+    model: &str,
+    date: NaiveDate,
+) -> Option<PathBuf> {
+    let camera_dir = config.get_dest_dir(model)?;
+    Some(
+        target_dir
+            .join(camera_dir)
+            .join(date.format("%Y").to_string())
+            .join(date.format("%m").to_string())
+            .join(date.format("%d").to_string()),
+    )
 }
 
 #[cfg(test)]
@@ -270,7 +336,6 @@ mod tests {
 
     #[test]
     fn test_parse_exif_date_fallback() {
-        // Fallback for slightly malformed or unexpected formats that start with the date
         assert_eq!(
             parse_exif_date("2023:10:25 random garbage"),
             Some(NaiveDate::from_ymd_opt(2023, 10, 25).unwrap())
@@ -280,7 +345,6 @@ mod tests {
     #[test]
     fn test_parse_exif_date_invalid() {
         assert_eq!(parse_exif_date("not a date"), None);
-        // "0000:00:00" is strictly invalid now thanks to from_ymd_opt
         assert_eq!(parse_exif_date("0000:00:00 00:00:00"), None);
     }
 
@@ -323,8 +387,7 @@ mod tests {
 
 /// Final handler for files with complete metadata.
 /// Copies files to `target_dir/<camera_dir>/YYYY/MM/DD/`
-#[allow(clippy::needless_pass_by_value)]
-pub fn file_handler(
+fn file_handler(
     rx: Receiver<FileInfo>,
     target_dir: PathBuf,
     config: Config,
@@ -332,7 +395,7 @@ pub fn file_handler(
     progress_tx: SyncSender<ProgressMsg>,
 ) {
     for info in rx {
-        let Some(camera_dir) = config.get_dest_dir(&info.model) else {
+        let Some(dest_dir) = compute_dest_dir(&target_dir, &config, &info.model, info.date) else {
             // Using a warning message via the UI instead of eprintln
             report_error(
                 &progress_tx,
@@ -341,13 +404,6 @@ pub fn file_handler(
             );
             continue;
         };
-
-        // Build destination path using platform-agnostic joins
-        let dest_dir = target_dir
-            .join(camera_dir)
-            .join(info.date.format("%Y").to_string())
-            .join(info.date.format("%m").to_string())
-            .join(info.date.format("%d").to_string());
 
         let Some(filename) = info.path.file_name() else {
             report_error(
