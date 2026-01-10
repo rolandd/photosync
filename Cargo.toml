@@ -2,6 +2,13 @@
 name = "photosync"
 version = "0.1.0"
 edition = "2024"
+authors = ["Roland Dreier <roland@kernel.org>"]
+description = "Tool for copying photos from SD cards"
+license = "MIT"
+repository = "https://github.com/rolandd/photosync"
+readme = "README.md"
+keywords = ["photography", "exif", "organize", "photos", "sync"]
+categories = ["command-line-utilities", "filesystem"]
 
 [dependencies]
 anyhow = "1.0"
