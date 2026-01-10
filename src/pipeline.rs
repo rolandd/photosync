@@ -448,7 +448,15 @@ mod tests {
         let date = NaiveDate::from_ymd_opt(2023, 10, 25).unwrap();
 
         let dest = compute_dest_dir(&target, &config, "Model", date).unwrap();
-        assert_eq!(dest, target.join("CameraDir/2023/10/25"));
+        // Use chained joins for cross-platform compatibility
+        assert_eq!(
+            dest,
+            target
+                .join("CameraDir")
+                .join("2023")
+                .join("10")
+                .join("25")
+        );
     }
 
     #[test]
@@ -461,7 +469,8 @@ mod tests {
         let date = NaiveDate::from_ymd_opt(2023, 10, 25).unwrap();
 
         let dest = compute_dest_dir(&target, &config, "Model", date).unwrap();
-        assert_eq!(dest, target.join("2023-10/CameraDir"));
+        // Use chained joins for cross-platform compatibility
+        assert_eq!(dest, target.join("2023-10").join("CameraDir"));
     }
 
     #[test]
