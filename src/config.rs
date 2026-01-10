@@ -120,19 +120,14 @@ fn parse_config_str(contents: &str) -> Result<Config> {
         raw.cameras
             .into_iter()
             .filter(|(model, dest_dir)| {
-                let path = Path::new(dest_dir);
-                if path.is_absolute()
-                    || path
-                        .components()
-                        .any(|c| matches!(c, std::path::Component::ParentDir))
-                {
+                if is_safe_path(dest_dir) {
+                    true
+                } else {
                     eprintln!(
                         "Warning: Camera directory mapping '{}' -> '{}' is unsafe (absolute or contains '..'). Skipping.",
                         model, dest_dir
                     );
                     false
-                } else {
-                    true
                 }
             })
             .collect()
@@ -145,6 +140,16 @@ fn parse_config_str(contents: &str) -> Result<Config> {
         target_dir: raw.dirs.target,
         dest_template: raw.dirs.template,
     })
+}
+
+/// Helper to validate if a directory path is safe.
+/// Returns false if path is absolute or contains parent directory traversal.
+fn is_safe_path(path_str: &str) -> bool {
+    let path = Path::new(path_str);
+    !path.is_absolute()
+        && !path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
 }
 
 /// Default camera model mappings.
