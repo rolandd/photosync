@@ -398,4 +398,19 @@ target = "/archive/photos"
         assert!(config.get_dest_dir("Unsafe2").is_none());
         assert!(config.get_dest_dir("Unsafe3").is_none());
     }
+
+    #[test]
+    fn test_is_safe_path() {
+        assert!(is_safe_path("simple"));
+        assert!(is_safe_path("nested/dir"));
+        assert!(is_safe_path("with spaces"));
+        assert!(is_safe_path(".")); // current dir is safe-ish, though maybe redundant
+
+        // Unsafe paths
+        assert!(!is_safe_path("/absolute"));
+        assert!(!is_safe_path("/"));
+        assert!(!is_safe_path("../parent"));
+        assert!(!is_safe_path("nested/../parent"));
+        assert!(!is_safe_path(".."));
+    }
 }
