@@ -63,6 +63,9 @@ fn run_text_mode(rx: Receiver<ProgressMsg>) -> Summary {
             ProgressMsg::CopyError { filename, error } => {
                 eprintln!("  Error: {filename}: {error}");
             }
+            ProgressMsg::ScanError { path, error } => {
+                eprintln!("  Scan Error: {}: {}", path.display(), error);
+            }
             ProgressMsg::SuspiciousDuplicate { src, .. } => {
                 eprintln!("  WARNING: Suspicious duplicate: {}", src.display());
             }

@@ -163,16 +163,26 @@ fn file_walker(source_dir: PathBuf, tx: SyncSender<PathBuf>, progress_tx: SyncSe
         ProgressMsg::ScanningDir(SourcePath::new(source_dir.clone())),
     );
 
-    for walk_entry in WalkDir::new(&source_dir)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
-        if walk_entry.file_type().is_file() {
-            let path = walk_entry.into_path();
-            send_progress(&progress_tx, ProgressMsg::FileFound);
-            if tx.send(path).is_err() {
-                return;
+    for walk_entry in WalkDir::new(&source_dir).follow_links(false) {
+        match walk_entry {
+            Ok(entry) => {
+                if entry.file_type().is_file() {
+                    let path = entry.into_path();
+                    send_progress(&progress_tx, ProgressMsg::FileFound);
+                    if tx.send(path).is_err() {
+                        return;
+                    }
+                }
+            }
+            Err(e) => {
+                let path = e.path().unwrap_or(Path::new("?")).to_path_buf();
+                send_progress(
+                    &progress_tx,
+                    ProgressMsg::ScanError {
+                        path: SourcePath::new(path),
+                        error: e.to_string(),
+                    },
+                );
             }
         }
     }

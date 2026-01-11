@@ -28,12 +28,6 @@ use std::sync::mpsc::Receiver;
 use crate::paths::{DestPath, SourcePath};
 use crate::progress::{self, ProgressMsg, Summary};
 
-/// Minimum number of recent items to display in the activity log.
-const MIN_RECENT_ITEMS: usize = 6;
-
-/// Default number of recent items (for smaller terminals).
-const DEFAULT_RECENT_ITEMS: usize = 10;
-
 /// Number of recent copy operations used for speed calculation.
 const SPEED_WINDOW_SIZE: usize = 10;
 
@@ -43,6 +37,10 @@ struct RecentItem {
     text: String,
     style: Style,
 }
+
+/// Fixed size history buffer for TUI limits.
+/// This is large enough to handle most terminal sizes without needing resize math.
+const HISTORY_SIZE: usize = 100;
 
 /// RAII guard to ensure terminal is restored on panic or early return.
 struct TerminalGuard;
@@ -84,7 +82,7 @@ pub struct App {
 
 impl App {
     /// Create a new App with specified max recent items.
-    fn with_max_recent(max_recent_items: usize) -> Self {
+    fn with_history_size(size: usize) -> Self {
         Self {
             summary: Summary::default(),
             scanning_dir: None,
@@ -93,8 +91,8 @@ impl App {
             current_file: None,
             files_to_copy: 0,
             recent_copies: VecDeque::with_capacity(SPEED_WINDOW_SIZE),
-            recent_items: VecDeque::with_capacity(max_recent_items),
-            max_recent_items,
+            recent_items: VecDeque::with_capacity(size),
+            max_recent_items: size,
             done: false,
         }
     }
@@ -102,7 +100,7 @@ impl App {
 
 impl Default for App {
     fn default() -> Self {
-        Self::with_max_recent(DEFAULT_RECENT_ITEMS)
+        Self::with_history_size(HISTORY_SIZE)
     }
 }
 
@@ -204,6 +202,12 @@ impl App {
                 self.add_recent(
                     format!("⊘ Unknown camera: {}", model),
                     Style::default().fg(Color::Magenta),
+                );
+            }
+            ProgressMsg::ScanError { path, error } => {
+                self.add_recent(
+                    format!("! Scan Error: {}: {}", path.display(), error),
+                    Style::default().fg(Color::Red),
                 );
             }
             _ => {}
@@ -365,17 +369,9 @@ pub fn run_tui(rx: Receiver<ProgressMsg>) -> Result<()> {
     let mut terminal =
         Terminal::new(CrosstermBackend::new(stdout())).context("Failed to create terminal")?;
 
-    // Compute max recent items based on terminal height
-    // Layout uses: outer border (2) + margin (2) + scan status (2) + current file (3)
-    //            + progress bar (2) + speed/stats (2) + recent block border (1) + footer (1) = 15 fixed
-    // Remaining height goes to recent items list
-    let terminal_height = terminal.size()?.height as usize;
-    let fixed_ui_lines = 15;
-    let max_recent_items = terminal_height
-        .saturating_sub(fixed_ui_lines)
-        .max(MIN_RECENT_ITEMS);
-
-    let mut app = App::with_max_recent(max_recent_items);
+    // We use a fixed history buffer. Ratatui List will handle scrolling/truncation
+    // based on available height.
+    let mut app = App::with_history_size(HISTORY_SIZE);
     let tick_rate = Duration::from_millis(100);
     let mut last_draw = Instant::now();
 
@@ -471,7 +467,7 @@ mod tests {
 
     #[test]
     fn test_add_recent_respects_limit() {
-        let mut app = App::with_max_recent(6);
+        let mut app = App::with_history_size(6);
         for i in 0..10 {
             app.add_recent(format!("Item {i}"), Style::default());
         }

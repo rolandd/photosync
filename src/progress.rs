@@ -22,6 +22,11 @@ const BYTES_PER_GB: u64 = 1024 * 1024 * 1024;
 pub enum ProgressMsg {
     // From file_walker
     ScanningDir(SourcePath),
+    /// Error accessing a directory or file during scan.
+    ScanError {
+        path: SourcePath,
+        error: String,
+    },
     FileFound,
     ScanComplete,
 
@@ -128,6 +133,10 @@ impl Summary {
             }
             ProgressMsg::SuspiciousDuplicate { src, dest } => {
                 self.suspicious_duplicates.push((src.clone(), dest.clone()));
+            }
+            // Count scan errors as generic errors
+            ProgressMsg::ScanError { .. } => {
+                self.files_errored += 1;
             }
             ProgressMsg::UnknownCamera { model, .. } => {
                 *self.unknown_cameras.entry(model.clone()).or_insert(0) += 1;
