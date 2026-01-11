@@ -6,7 +6,7 @@
 //! This module defines the [`ProgressMsg`] enum used to communicate progress
 //! updates from worker threads to the UI, along with shared formatting utilities.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::time::Duration;
 
@@ -103,7 +103,7 @@ pub struct Summary {
     /// Files that matched by name but had different contents.
     pub suspicious_duplicates: Vec<(SourcePath, DestPath)>,
     /// Camera models not found in configuration, with count of files skipped.
-    pub unknown_cameras: HashMap<String, u32>,
+    pub unknown_cameras: BTreeMap<String, u32>,
 }
 
 impl Summary {
@@ -182,10 +182,8 @@ impl fmt::Display for Summary {
                 "\nWARNING: {} file(s) skipped due to unknown camera model(s):",
                 total_skipped
             )?;
-            // Sort by camera model for consistent output
-            let mut cameras: Vec<_> = self.unknown_cameras.iter().collect();
-            cameras.sort_by_key(|(model, _)| *model);
-            for (model, count) in cameras {
+            // BTreeMap is already sorted by key
+            for (model, count) in &self.unknown_cameras {
                 writeln!(f, "  \"{model}\": {count} file(s)")?;
             }
             writeln!(

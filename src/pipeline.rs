@@ -101,11 +101,10 @@ pub fn spawn_pipeline(
 }
 
 /// Helper to send progress messages, suppressing errors.
-#[allow(unused_variables)]
 fn send_progress(tx: &SyncSender<ProgressMsg>, msg: ProgressMsg) {
-    if let Err(e) = tx.send(msg) {
+    if let Err(_e) = tx.send(msg) {
         #[cfg(debug_assertions)]
-        eprintln!("Warning: Failed to send progress message: {:?}", e);
+        eprintln!("Warning: Failed to send progress message: {:?}", _e);
     }
 }
 
@@ -212,7 +211,8 @@ fn file_processor(
 
         let date = exif
             .get(ExifTag::DateTimeOriginal)
-            .and_then(|v| parse_exif_date(&v.to_string()));
+            .and_then(|v| v.as_str())
+            .and_then(parse_exif_date);
 
         if let (Some(model), Some(date)) = (model, date) {
             send_progress(
@@ -275,6 +275,8 @@ fn parse_exif_date(s: &str) -> Option<NaiveDate> {
                 )
                 && let Some(date) = NaiveDate::from_ymd_opt(y, m, d)
             {
+                #[cfg(debug_assertions)]
+                eprintln!("Debug: Fallback date parsing used for: {s}");
                 return Some(date);
             }
         }

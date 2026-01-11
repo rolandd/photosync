@@ -19,12 +19,6 @@ impl SourcePath {
     pub fn new(path: PathBuf) -> Self {
         Self(path)
     }
-
-    /// Returns the inner `PathBuf`.
-    #[allow(dead_code)]
-    pub fn into_inner(self) -> PathBuf {
-        self.0
-    }
 }
 
 impl Deref for SourcePath {
@@ -61,12 +55,6 @@ impl DestPath {
     /// Creates a new `DestPath` from a `PathBuf`.
     pub fn new(path: PathBuf) -> Self {
         Self(path)
-    }
-
-    /// Returns the inner `PathBuf`.
-    #[allow(dead_code)]
-    pub fn into_inner(self) -> PathBuf {
-        self.0
     }
 }
 

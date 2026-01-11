@@ -28,8 +28,11 @@ use std::sync::mpsc::Receiver;
 use crate::paths::{DestPath, SourcePath};
 use crate::progress::{self, ProgressMsg, Summary};
 
-/// Maximum number of recent items to display in the activity log.
-const MAX_RECENT_ITEMS: usize = 6;
+/// Minimum number of recent items to display in the activity log.
+const MIN_RECENT_ITEMS: usize = 6;
+
+/// Default number of recent items (for smaller terminals).
+const DEFAULT_RECENT_ITEMS: usize = 10;
 
 /// Number of recent copy operations used for speed calculation.
 const SPEED_WINDOW_SIZE: usize = 10;
@@ -73,13 +76,15 @@ pub struct App {
 
     // Activity log
     recent_items: VecDeque<RecentItem>,
+    max_recent_items: usize,
 
     // State
     done: bool,
 }
 
-impl Default for App {
-    fn default() -> Self {
+impl App {
+    /// Create a new App with specified max recent items.
+    fn with_max_recent(max_recent_items: usize) -> Self {
         Self {
             summary: Summary::default(),
             scanning_dir: None,
@@ -88,15 +93,22 @@ impl Default for App {
             current_file: None,
             files_to_copy: 0,
             recent_copies: VecDeque::with_capacity(SPEED_WINDOW_SIZE),
-            recent_items: VecDeque::with_capacity(MAX_RECENT_ITEMS),
+            recent_items: VecDeque::with_capacity(max_recent_items),
+            max_recent_items,
             done: false,
         }
     }
 }
 
+impl Default for App {
+    fn default() -> Self {
+        Self::with_max_recent(DEFAULT_RECENT_ITEMS)
+    }
+}
+
 impl App {
     fn add_recent(&mut self, text: String, style: Style) {
-        if self.recent_items.len() >= MAX_RECENT_ITEMS {
+        if self.recent_items.len() >= self.max_recent_items {
             self.recent_items.pop_back();
         }
         self.recent_items.push_front(RecentItem { text, style });
@@ -353,7 +365,17 @@ pub fn run_tui(rx: Receiver<ProgressMsg>) -> Result<()> {
     let mut terminal =
         Terminal::new(CrosstermBackend::new(stdout())).context("Failed to create terminal")?;
 
-    let mut app = App::default();
+    // Compute max recent items based on terminal height
+    // Layout uses: outer border (2) + margin (2) + scan status (2) + current file (3)
+    //            + progress bar (2) + speed/stats (2) + recent block border (1) + footer (1) = 15 fixed
+    // Remaining height goes to recent items list
+    let terminal_height = terminal.size()?.height as usize;
+    let fixed_ui_lines = 15;
+    let max_recent_items = terminal_height
+        .saturating_sub(fixed_ui_lines)
+        .max(MIN_RECENT_ITEMS);
+
+    let mut app = App::with_max_recent(max_recent_items);
     let tick_rate = Duration::from_millis(100);
     let mut last_draw = Instant::now();
 
@@ -449,11 +471,11 @@ mod tests {
 
     #[test]
     fn test_add_recent_respects_limit() {
-        let mut app = App::default();
+        let mut app = App::with_max_recent(6);
         for i in 0..10 {
             app.add_recent(format!("Item {i}"), Style::default());
         }
-        assert_eq!(app.recent_items.len(), MAX_RECENT_ITEMS);
+        assert_eq!(app.recent_items.len(), app.max_recent_items);
         // Most recent should be first
         assert!(app.recent_items.front().unwrap().text.contains('9'));
     }
