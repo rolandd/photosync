@@ -117,7 +117,7 @@ fn main() -> Result<()> {
 
     // Validate and set CLI template override (uses same validation as config file)
     if let Some(t) = args.template {
-        config.dest_template = validate_template(t);
+        config.dest_template = Some(validate_template(t)?);
     }
 
     // Determine paths

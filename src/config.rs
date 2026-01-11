@@ -151,29 +151,25 @@ fn parse_config_str(contents: &str) -> Result<Config> {
     let raw: RawConfig = toml::from_str(contents)?;
 
     // Convert HashMap to sorted Vec (empty if not specified)
-    let mut camera_dirs: Vec<_> = if raw.cameras.is_empty() {
-        Vec::new()
-    } else {
-        // Validate and collect user-provided camera mappings
-        raw.cameras
-            .into_iter()
-            .filter(|(model, dest_dir)| {
-                if is_safe_path(dest_dir) {
-                    true
-                } else {
-                    eprintln!(
-                        "Warning: Camera directory mapping '{}' -> '{}' is unsafe (absolute or contains '..'). Skipping.",
-                        model, dest_dir
-                    );
-                    false
-                }
-            })
-            .collect()
-    };
+    let mut camera_dirs = Vec::new();
+    if !raw.cameras.is_empty() {
+        for (model, dest_dir) in raw.cameras {
+            is_safe_path(&dest_dir).with_context(|| {
+                format!(
+                    "Invalid camera directory mapping for '{}': '{}'",
+                    model, dest_dir
+                )
+            })?;
+            camera_dirs.push((model, dest_dir));
+        }
+    }
     sort_camera_dirs(&mut camera_dirs);
 
     // Validate template if present
-    let dest_template = raw.dirs.template.and_then(validate_template);
+    let dest_template = match raw.dirs.template {
+        Some(t) => Some(validate_template(t)?),
+        None => None,
+    };
 
     Ok(Config {
         camera_dirs,
@@ -184,28 +180,43 @@ fn parse_config_str(contents: &str) -> Result<Config> {
 }
 
 /// Helper to validate if a directory path is safe.
-/// Returns false if path is absolute or contains parent directory traversal.
-fn is_safe_path(path_str: &str) -> bool {
+/// Returns Result::Ok if safe, Result::Err if unsafe.
+fn is_safe_path(path_str: &str) -> Result<()> {
+    if path_str.contains('\\') {
+        anyhow::bail!("Backslashes are not allowed. Please use forward slashes '/' for portability.");
+    }
+
     let path = Path::new(path_str);
-    !path.is_absolute()
-        && !path
-            .components()
-            .any(|c| matches!(c, std::path::Component::ParentDir))
+    if path.is_absolute() {
+        anyhow::bail!("Path must be relative.");
+    }
+    if path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        anyhow::bail!("Path cannot contain '..' (parent directory traversal).");
+    }
+    Ok(())
 }
 
 /// Validates a destination template string.
-/// Returns `Some(template)` if valid, `None` if invalid (with a warning printed).
-pub fn validate_template(template: String) -> Option<String> {
-    // Check for path traversal attempts
-    // Split by both / and \ to handle cross-platform templates safely
-    if template.split(|c| c == '/' || c == '\\').any(|c| c == "..") {
-        eprintln!(
-            "Warning: Template '{}' contains unsafe '..' path traversal. Ignoring.",
+/// Returns `Ok(template)` if valid, `Err` if invalid.
+pub fn validate_template(template: String) -> Result<String> {
+    if template.contains('\\') {
+        anyhow::bail!(
+            "Template '{}' contains backslashes. Please use forward slashes '/' for portability.",
             template
         );
-        return None;
     }
-    Some(template)
+
+    // Check for path traversal attempts
+    if template.split('/').any(|c| c == "..") {
+        anyhow::bail!(
+            "Template '{}' contains unsafe '..' path traversal.",
+            template
+        );
+    }
+    Ok(template)
 }
 
 /// Returns the path to the user's config file.
@@ -414,57 +425,55 @@ target = "/archive/photos"
 
     #[test]
     fn test_parse_config_rejects_unsafe_paths() {
+        // Now returns Error instead of silently skipping
         let toml = r#"
 [cameras]
-"Safe" = "safe-dir"
 "Unsafe1" = "/abs/path"
-"Unsafe2" = "../parent"
-"Unsafe3" = "a/../../b"
 "#;
-        let config = parse_config_str(toml).unwrap();
-        assert!(config.get_dest_dir("Safe").is_some());
-        assert!(config.get_dest_dir("Unsafe1").is_none());
-        assert!(config.get_dest_dir("Unsafe2").is_none());
-        assert!(config.get_dest_dir("Unsafe3").is_none());
+        assert!(parse_config_str(toml).is_err());
+    }
+
+    #[test]
+    fn test_parse_config_rejects_backslashes() {
+        let toml = r#"
+[cameras]
+"Windows" = "folder\\subfolder"
+"#;
+        let err = parse_config_str(toml).unwrap_err();
+        // Check the debug output or iterate sources to find the specific error
+        assert!(format!("{:?}", err).contains("Backslashes are not allowed"));
     }
 
     #[test]
     fn test_is_safe_path() {
-        assert!(is_safe_path("simple"));
-        assert!(is_safe_path("nested/dir"));
-        assert!(is_safe_path("with spaces"));
-        assert!(is_safe_path(".")); // current dir is safe-ish, though maybe redundant
+        assert!(is_safe_path("simple").is_ok());
+        assert!(is_safe_path("nested/dir").is_ok());
 
         // Unsafe paths
-        assert!(!is_safe_path("/absolute"));
-        assert!(!is_safe_path("/"));
-        assert!(!is_safe_path("../parent"));
-        assert!(!is_safe_path("nested/../parent"));
-        assert!(!is_safe_path(".."));
+        assert!(is_safe_path("/absolute").is_err());
+        assert!(is_safe_path("../parent").is_err());
+        assert!(is_safe_path("nested/../parent").is_err());
+
+        // Backslashes
+        assert!(is_safe_path(r"nested\dir").is_err());
     }
 
     #[test]
     fn test_validate_template_valid() {
-        assert_eq!(
-            validate_template("{camera}/{year}".to_string()),
-            Some("{camera}/{year}".to_string())
-        );
-        assert_eq!(
-            validate_template("{year}/{month}/{day}".to_string()),
-            Some("{year}/{month}/{day}".to_string())
-        );
+        assert!(validate_template("{camera}/{year}".to_string()).is_ok());
+        assert!(validate_template("{year}/{month}/{day}".to_string()).is_ok());
     }
 
     #[test]
     fn test_validate_template_unsafe_traversal() {
         // Templates with .. should be rejected
-        assert_eq!(validate_template("../{camera}".to_string()), None);
-        assert_eq!(validate_template("{camera}/../escape".to_string()), None);
-        assert_eq!(validate_template("foo/..".to_string()), None);
+        assert!(validate_template("../{camera}".to_string()).is_err());
+        assert!(validate_template("{camera}/../escape".to_string()).is_err());
+    }
 
-        // Windows-style separators
-        assert_eq!(validate_template(r"..\{camera}".to_string()), None);
-        assert_eq!(validate_template(r"{camera}\..\escape".to_string()), None);
+    #[test]
+    fn test_validate_template_backslashes() {
+        assert!(validate_template(r"{camera}\{year}".to_string()).is_err());
     }
 
     #[test]
@@ -473,9 +482,7 @@ target = "/archive/photos"
 [dirs]
 template = "../escape/{camera}"
 "#;
-        let config = parse_config_str(toml).unwrap();
-        // Template should be None because it's unsafe
-        assert!(config.dest_template.is_none());
+        assert!(parse_config_str(toml).is_err());
     }
 
     // Path expansion tests
