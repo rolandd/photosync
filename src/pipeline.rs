@@ -346,13 +346,16 @@ fn compute_dest_dir(
     }
 
     // Construct the full path
-    // We split by '/' to handle the template structure.
+    // We split by '/' or '\' to handle the template structure regardless of OS.
     // Even if the replacement values contain path separators (e.g. camera_dir_name="A/B"),
-    // split('/') will break them down correctly for PathBuf::push.
+    // splitting will break them down correctly for PathBuf::push.
     // We also check for '..' components dynamically.
 
     let mut dest_path = target_dir.to_path_buf();
-    for component in path_str.split('/').filter(|c| !c.is_empty()) {
+    for component in path_str
+        .split(|c| c == '/' || c == '\\')
+        .filter(|c| !c.is_empty())
+    {
         if component == ".." || component == "." {
             // ".." is unsafe. "." is redundant but technically safe, but let's avoid it to be clean.
             if component == ".." {
@@ -633,6 +636,26 @@ mod tests {
                 .join("10")
                 .join("25")
         );
+    }
+
+    #[test]
+    fn test_compute_dest_dir_backslash_template() {
+        // Test that templates with backslashes are handled correctly (even on Linux)
+        // This simulates Windows-style templates or users just mixing separators
+        let mut config = Config::default();
+        config.camera_dirs = vec![("Model".to_string(), "CameraDir".to_string())];
+        config.dest_template = Some(r"{year}\{month}/{camera}".to_string());
+
+        let target = PathBuf::from("/target");
+        let date = NaiveDate::from_ymd_opt(2023, 10, 25).unwrap();
+
+        let DestDirResult::Ok(dest) = compute_dest_dir(&target, &config, "Model", date) else {
+            panic!("Expected DestDirResult::Ok");
+        };
+
+        // Output path should use platform separator (automatically handled by join)
+        // but the input template's backslashes should have been treated as separators
+        assert_eq!(dest, target.join("2023").join("10").join("CameraDir"));
     }
 }
 

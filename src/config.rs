@@ -197,7 +197,8 @@ fn is_safe_path(path_str: &str) -> bool {
 /// Returns `Some(template)` if valid, `None` if invalid (with a warning printed).
 pub fn validate_template(template: String) -> Option<String> {
     // Check for path traversal attempts
-    if template.split('/').any(|c| c == "..") {
+    // Split by both / and \ to handle cross-platform templates safely
+    if template.split(|c| c == '/' || c == '\\').any(|c| c == "..") {
         eprintln!(
             "Warning: Template '{}' contains unsafe '..' path traversal. Ignoring.",
             template
@@ -460,6 +461,10 @@ target = "/archive/photos"
         assert_eq!(validate_template("../{camera}".to_string()), None);
         assert_eq!(validate_template("{camera}/../escape".to_string()), None);
         assert_eq!(validate_template("foo/..".to_string()), None);
+
+        // Windows-style separators
+        assert_eq!(validate_template(r"..\{camera}".to_string()), None);
+        assert_eq!(validate_template(r"{camera}\..\escape".to_string()), None);
     }
 
     #[test]
