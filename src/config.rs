@@ -32,6 +32,10 @@ pub struct Args {
     /// Destination directory structure template (default: "{camera}/{year}/{month}/{day}")
     #[arg(long)]
     pub template: Option<String>,
+
+    /// Create a starter configuration file
+    #[arg(long)]
+    pub init: bool,
 }
 
 /// Configuration file structure.
@@ -112,9 +116,9 @@ pub fn load_config() -> Result<Config> {
 fn parse_config_str(contents: &str) -> Result<Config> {
     let raw: RawConfig = toml::from_str(contents)?;
 
-    // Convert HashMap to sorted Vec, using defaults if empty
+    // Convert HashMap to sorted Vec (empty if not specified)
     let mut camera_dirs: Vec<_> = if raw.cameras.is_empty() {
-        default_camera_dirs()
+        Vec::new()
     } else {
         // Validate and collect user-provided camera mappings
         raw.cameras
@@ -169,26 +173,39 @@ pub fn validate_template(template: String) -> Option<String> {
     Some(template)
 }
 
-/// Default camera model mappings.
-fn default_camera_dirs() -> Vec<(String, String)> {
-    vec![
-        ("EOS R6".into(), "CanonR6-images".into()),
-        ("6D".into(), "Canon6D-images".into()),
-        ("Hero13".into(), "GoPro-Hero13".into()),
-        ("HERO13".into(), "GoPro-Hero13".into()),
-        ("Hero8".into(), "GoPro-Hero8".into()),
-        ("HERO8".into(), "GoPro-Hero8".into()),
-    ]
+/// Returns the path to the user's config file.
+pub fn config_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|p| p.join("photosync/photosync.toml"))
+}
+
+/// Generate a starter configuration file template.
+pub fn generate_config_template() -> String {
+    r#"# Photosync Configuration
+# Docs: https://github.com/rolandd/photosync#configuration
+
+[dirs]
+# source = "/media/your_username"   # Where to scan for photos
+# target = "/home/your_username/Pictures"  # Where to copy photos
+# template = "{camera}/{year}/{month}/{day}"  # Directory structure
+
+[cameras]
+# Map camera model substrings to folder names.
+# The tool matches the longest substring first.
+# Examples:
+# "EOS R6" = "Canon-R6"
+# "Sony A7" = "Sony-A7"
+# "iPhone" = "iPhone"
+# "Pixel" = "Pixel"
+"#
+    .to_string()
 }
 
 impl Config {
-    /// Creates a Config with default camera directories, properly sorted.
+    /// Creates an empty Config for testing.
     #[cfg(test)]
     fn with_defaults() -> Self {
-        let mut camera_dirs = default_camera_dirs();
-        sort_camera_dirs(&mut camera_dirs);
         Self {
-            camera_dirs,
+            camera_dirs: Vec::new(),
             source_dir: None,
             target_dir: None,
             dest_template: None,
@@ -244,48 +261,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_get_dest_dir_eos_r6() {
-        let config = Config::with_defaults();
+    fn test_get_dest_dir_matching() {
+        // Create config with custom camera mappings
+        let mut config = Config::default();
+        config.camera_dirs = vec![
+            ("EOS R6".to_string(), "CanonR6-images".to_string()),
+            ("6D".to_string(), "Canon6D-images".to_string()),
+        ];
+
         assert_eq!(config.get_dest_dir("Canon EOS R6"), Some("CanonR6-images"));
-    }
-
-    #[test]
-    fn test_get_dest_dir_6d() {
-        let config = Config::with_defaults();
         assert_eq!(config.get_dest_dir("Canon EOS 6D"), Some("Canon6D-images"));
-    }
-
-    #[test]
-    fn test_get_dest_dir_gopro_hero13() {
-        let config = Config::with_defaults();
-        assert_eq!(
-            config.get_dest_dir("GoPro Hero13 Black"),
-            Some("GoPro-Hero13")
-        );
-        assert_eq!(
-            config.get_dest_dir("GoPro HERO13 Black"),
-            Some("GoPro-Hero13")
-        );
-    }
-
-    #[test]
-    fn test_get_dest_dir_gopro_hero8() {
-        let config = Config::with_defaults();
-        assert_eq!(
-            config.get_dest_dir("GoPro Hero8 Black"),
-            Some("GoPro-Hero8")
-        );
-        assert_eq!(
-            config.get_dest_dir("GoPro HERO8 Black"),
-            Some("GoPro-Hero8")
-        );
-    }
-
-    #[test]
-    fn test_get_dest_dir_unknown() {
-        let config = Config::with_defaults();
         assert_eq!(config.get_dest_dir("Sony A7 III"), None);
-        assert_eq!(config.get_dest_dir("Unknown Camera"), None);
+    }
+
+    #[test]
+    fn test_get_dest_dir_empty_config() {
+        let config = Config::with_defaults();
+        // Empty config should have no camera mappings
+        assert!(config.camera_dirs.is_empty());
+        assert_eq!(config.get_dest_dir("Any Camera"), None);
     }
 
     // TOML parsing tests
@@ -293,12 +287,11 @@ mod tests {
     #[test]
     fn test_parse_empty_config() {
         let config = parse_config_str("").unwrap();
-        // Should use all defaults
+        // Empty config should have no defaults
         assert!(config.source_dir.is_none());
         assert!(config.target_dir.is_none());
         assert!(config.dest_template.is_none());
-        assert!(!config.camera_dirs.is_empty()); // default cameras
-        assert!(config.get_dest_dir("Canon EOS R6").is_some());
+        assert!(config.camera_dirs.is_empty()); // no default cameras
     }
 
     #[test]
@@ -316,8 +309,8 @@ template = "{camera}/{year}"
             Some(PathBuf::from("/home/test/Pictures"))
         );
         assert_eq!(config.dest_template, Some("{camera}/{year}".to_string()));
-        // Should still have default cameras
-        assert!(config.get_dest_dir("Canon EOS R6").is_some());
+        // No default cameras, should be empty
+        assert!(config.camera_dirs.is_empty());
     }
 
     #[test]

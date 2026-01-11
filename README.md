@@ -2,13 +2,8 @@
 
 [![CI](https://github.com/rolandd/photosync/actions/workflows/ci.yml/badge.svg)](https://github.com/rolandd/photosync/actions/workflows/ci.yml)
 
-A personal Rust utility for syncing photos from camera memory cards to
+A Rust utility for syncing photos from camera memory cards to
 organized directories based on EXIF metadata.
-
-> **Note:** This is a personal project tailored for my specific
-> photography workflow. It has defaults for my cameras (Canon EOS R6,
-> Canon 6D, GoPro Hero8/Hero13) and file organization style but is
-> configurable for other setups.
 
 ## What It Does
 
@@ -33,10 +28,26 @@ The directory structure is configurable using a template system.
 Requires Rust 2024 edition.
 
 ```bash
+cargo install photosync
+# Or build from source:
 cargo build --release
 ```
 
-The binary will be at `target/release/photosync`.
+## Quick Start
+
+```bash
+# Create a configuration file
+photosync --init
+
+# Edit the config to add your camera mappings
+# (location shown by --init output)
+
+# Run a dry run to see what would be copied
+photosync -n
+
+# Sync your photos
+photosync
+```
 
 ## Usage
 
@@ -61,6 +72,7 @@ photosync --no-tui
 
 | Option | Description |
 |--------|-------------|
+| `--init` | Create a starter configuration file |
 | `-n`, `--dry-run` | Print what would be done without copying |
 | `--no-tui` | Disable interactive UI, use plain text output |
 | `--source <PATH>` | Override source directory |

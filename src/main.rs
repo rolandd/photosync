@@ -17,7 +17,7 @@ mod pipeline;
 mod progress;
 mod tui;
 
-use config::{Args, load_config, validate_template};
+use config::{Args, config_path, generate_config_template, load_config, validate_template};
 use progress::{ProgressMsg, Summary};
 
 /// Channel buffer size for the progress channel.
@@ -65,6 +65,7 @@ fn run_text_mode(rx: Receiver<ProgressMsg>) -> Summary {
             ProgressMsg::SuspiciousDuplicate { src, .. } => {
                 eprintln!("  WARNING: Suspicious duplicate: {}", src.display());
             }
+            // UnknownCamera is tracked in summary, no need to log each instance
             _ => {}
         }
     }
@@ -72,8 +73,42 @@ fn run_text_mode(rx: Receiver<ProgressMsg>) -> Summary {
     summary
 }
 
+/// Handle --init: create a starter config file.
+fn handle_init() -> Result<()> {
+    use std::fs;
+
+    let config_path = config_path().context("Could not determine config directory")?;
+
+    if config_path.exists() {
+        anyhow::bail!(
+            "Config file already exists at: {}\nEdit it directly or delete it first.",
+            config_path.display()
+        );
+    }
+
+    // Create parent directory if needed
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create config directory: {}", parent.display()))?;
+    }
+
+    let template = generate_config_template();
+    fs::write(&config_path, template)
+        .with_context(|| format!("Failed to write config file: {}", config_path.display()))?;
+
+    println!("Created config file: {}", config_path.display());
+    println!("Edit this file to add your camera mappings.");
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let args = Args::parse();
+
+    // Handle --init first (before loading config)
+    if args.init {
+        return handle_init();
+    }
+
     let mut config = load_config()?;
 
     // Validate and set CLI template override (uses same validation as config file)

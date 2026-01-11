@@ -6,6 +6,7 @@
 //! This module defines the [`ProgressMsg`] enum used to communicate progress
 //! updates from worker threads to the UI, along with shared formatting utilities.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -52,6 +53,10 @@ pub enum ProgressMsg {
         src: PathBuf,
         dest: PathBuf,
     },
+    /// Camera model not found in configuration (when template needs {camera}).
+    UnknownCamera {
+        model: String,
+    },
 
     // Sentinel - all workers done
     Done,
@@ -96,6 +101,8 @@ pub struct Summary {
     pub total_duration: Duration,
     /// Files that matched by name but had different contents.
     pub suspicious_duplicates: Vec<(PathBuf, PathBuf)>,
+    /// Camera models not found in configuration, with count of files skipped.
+    pub unknown_cameras: HashMap<String, u32>,
 }
 
 impl Summary {
@@ -120,6 +127,9 @@ impl Summary {
             }
             ProgressMsg::SuspiciousDuplicate { src, dest } => {
                 self.suspicious_duplicates.push((src.clone(), dest.clone()));
+            }
+            ProgressMsg::UnknownCamera { model, .. } => {
+                *self.unknown_cameras.entry(model.clone()).or_insert(0) += 1;
             }
             ProgressMsg::Done => return true,
             // ScanningDir, ScanComplete, ExifExtracted, CopyStarted - no summary update
@@ -160,6 +170,27 @@ impl fmt::Display for Summary {
                 writeln!(f, "  Source: {}", src.display())?;
                 writeln!(f, "    Dest: {}", dest.display())?;
             }
+        }
+
+        // Print unknown cameras report
+        if !self.unknown_cameras.is_empty() {
+            writeln!(f)?;
+            let total_skipped: u32 = self.unknown_cameras.values().sum();
+            writeln!(
+                f,
+                "\nWARNING: {} file(s) skipped due to unknown camera model(s):",
+                total_skipped
+            )?;
+            // Sort by camera model for consistent output
+            let mut cameras: Vec<_> = self.unknown_cameras.iter().collect();
+            cameras.sort_by_key(|(model, _)| *model);
+            for (model, count) in cameras {
+                writeln!(f, "  \"{model}\": {count} file(s)")?;
+            }
+            writeln!(
+                f,
+                "Run 'photosync --init' to create a config, or edit your config to add mappings."
+            )?;
         }
         Ok(())
     }

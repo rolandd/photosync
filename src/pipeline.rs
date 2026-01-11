@@ -264,22 +264,39 @@ fn parse_exif_date(s: &str) -> Option<NaiveDate> {
     None
 }
 
+/// Result of computing a destination directory.
+#[derive(Debug)]
+enum DestDirResult {
+    Ok(PathBuf),
+    UnknownCamera,
+    TemplateError(String),
+}
+
 /// Helper to compute the destination directory for a file.
-/// Returns `None` if the camera model is unknown or if the template is invalid.
+/// Returns `DestDirResult::UnknownCamera` if the camera model is unknown (when template needs it),
+/// `DestDirResult::TemplateError` if the template is invalid, or `DestDirResult::Ok` with the path.
 fn compute_dest_dir(
     target_dir: &Path,
     config: &Config,
     model: &str,
     date: NaiveDate,
-) -> Option<PathBuf> {
-    let camera_dir_name = config.get_dest_dir(model)?;
-
-    // Note: camera_dir_name is already validated when loading config (no absolute paths or '..')
-
+) -> DestDirResult {
     let template = config
         .dest_template
         .as_deref()
         .unwrap_or("{camera}/{year}/{month}/{day}");
+
+    // Only look up camera if template uses it
+    let camera_dir_name = if template.contains("{camera}") {
+        match config.get_dest_dir(model) {
+            Some(name) => name,
+            None => return DestDirResult::UnknownCamera,
+        }
+    } else {
+        "" // Not used
+    };
+
+    // Note: camera_dir_name is already validated when loading config (no absolute paths or '..')
 
     let mut path_str = template.to_string();
 
@@ -292,10 +309,9 @@ fn compute_dest_dir(
 
     // Basic validation: Check for remaining curly braces which might indicate broken tags
     if path_str.contains('{') || path_str.contains('}') {
-        eprintln!(
-            "Warning: Malformed template or unknown tag in '{template}'. Result: '{path_str}'"
-        );
-        return None;
+        return DestDirResult::TemplateError(format!(
+            "Malformed template or unknown tag in '{template}'. Result: '{path_str}'"
+        ));
     }
 
     // Construct the full path
@@ -309,10 +325,9 @@ fn compute_dest_dir(
         if component == ".." || component == "." {
             // ".." is unsafe. "." is redundant but technically safe, but let's avoid it to be clean.
             if component == ".." {
-                eprintln!(
-                    "Warning: Template resulted in '..' component, which is unsafe. Path: '{path_str}'"
-                );
-                return None;
+                return DestDirResult::TemplateError(format!(
+                    "Template resulted in '..' component, which is unsafe. Path: '{path_str}'"
+                ));
             }
             continue;
         }
@@ -322,17 +337,16 @@ fn compute_dest_dir(
             // Rudimentary check for drive letters or absolute paths injected via components
             // (e.g. if replacement was "C:\Bad")
             if Path::new(component).is_absolute() {
-                eprintln!(
-                    "Warning: Component '{component}' appears to be absolute. Path: '{path_str}'"
-                );
-                return None;
+                return DestDirResult::TemplateError(format!(
+                    "Component '{component}' appears to be absolute. Path: '{path_str}'"
+                ));
             }
         }
 
         dest_path.push(component);
     }
 
-    Some(dest_path)
+    DestDirResult::Ok(dest_path)
 }
 
 #[cfg(test)]
@@ -447,7 +461,9 @@ mod tests {
         let target = PathBuf::from("/target");
         let date = NaiveDate::from_ymd_opt(2023, 10, 25).unwrap();
 
-        let dest = compute_dest_dir(&target, &config, "Model", date).unwrap();
+        let DestDirResult::Ok(dest) = compute_dest_dir(&target, &config, "Model", date) else {
+            panic!("Expected DestDirResult::Ok");
+        };
         // Use chained joins for cross-platform compatibility
         assert_eq!(
             dest,
@@ -464,7 +480,9 @@ mod tests {
         let target = PathBuf::from("/target");
         let date = NaiveDate::from_ymd_opt(2023, 10, 25).unwrap();
 
-        let dest = compute_dest_dir(&target, &config, "Model", date).unwrap();
+        let DestDirResult::Ok(dest) = compute_dest_dir(&target, &config, "Model", date) else {
+            panic!("Expected DestDirResult::Ok");
+        };
         // Use chained joins for cross-platform compatibility
         assert_eq!(dest, target.join("2023-10").join("CameraDir"));
     }
@@ -475,7 +493,10 @@ mod tests {
         let target = PathBuf::from("/target");
         let date = NaiveDate::from_ymd_opt(2023, 10, 25).unwrap();
 
-        assert!(compute_dest_dir(&target, &config, "Unknown", date).is_none());
+        assert!(matches!(
+            compute_dest_dir(&target, &config, "Unknown", date),
+            DestDirResult::UnknownCamera
+        ));
     }
 
     #[test]
@@ -487,8 +508,11 @@ mod tests {
         let target = PathBuf::from("/target");
         let date = NaiveDate::from_ymd_opt(2023, 10, 25).unwrap();
 
-        // Should return None because of unknown tag left in string
-        assert!(compute_dest_dir(&target, &config, "Model", date).is_none());
+        // Should return TemplateError because of unknown tag left in string
+        assert!(matches!(
+            compute_dest_dir(&target, &config, "Model", date),
+            DestDirResult::TemplateError(_)
+        ));
     }
 
     #[test]
@@ -500,8 +524,27 @@ mod tests {
         let target = PathBuf::from("/target");
         let date = NaiveDate::from_ymd_opt(2023, 10, 25).unwrap();
 
-        // Should return None because of ".."
-        assert!(compute_dest_dir(&target, &config, "Model", date).is_none());
+        // Should return TemplateError because of ".."
+        assert!(matches!(
+            compute_dest_dir(&target, &config, "Model", date),
+            DestDirResult::TemplateError(_)
+        ));
+    }
+
+    #[test]
+    fn test_compute_dest_dir_no_camera_in_template() {
+        // Template without {camera} should work even with no camera mappings
+        let mut config = Config::default();
+        config.dest_template = Some("{year}/{month}/{day}".to_string());
+        // No camera_dirs configured
+
+        let target = PathBuf::from("/target");
+        let date = NaiveDate::from_ymd_opt(2023, 10, 25).unwrap();
+
+        let DestDirResult::Ok(dest) = compute_dest_dir(&target, &config, "Any Camera", date) else {
+            panic!("Expected DestDirResult::Ok");
+        };
+        assert_eq!(dest, target.join("2023").join("10").join("25"));
     }
 
     #[test]
@@ -545,7 +588,9 @@ mod tests {
         let target = PathBuf::from("/target");
         let date = NaiveDate::from_ymd_opt(2023, 10, 25).unwrap();
 
-        let dest = compute_dest_dir(&target, &config, "Model", date).unwrap();
+        let DestDirResult::Ok(dest) = compute_dest_dir(&target, &config, "Model", date) else {
+            panic!("Expected DestDirResult::Ok");
+        };
         // Should properly join nested path components
         assert_eq!(
             dest,
@@ -570,14 +615,21 @@ fn file_handler(
     progress_tx: SyncSender<ProgressMsg>,
 ) {
     for info in rx {
-        let Some(dest_dir) = compute_dest_dir(&target_dir, &config, &info.model, info.date) else {
-            // Using a warning message via the UI instead of eprintln
-            report_error(
-                &progress_tx,
-                info.path.display().to_string(),
-                format!("Unknown camera model '{}', skipping", info.model),
-            );
-            continue;
+        let dest_dir = match compute_dest_dir(&target_dir, &config, &info.model, info.date) {
+            DestDirResult::Ok(path) => path,
+            DestDirResult::UnknownCamera => {
+                send_progress(
+                    &progress_tx,
+                    ProgressMsg::UnknownCamera {
+                        model: info.model.clone(),
+                    },
+                );
+                continue;
+            }
+            DestDirResult::TemplateError(msg) => {
+                report_error(&progress_tx, info.path.display().to_string(), msg);
+                continue;
+            }
         };
 
         let Some(filename) = info.path.file_name() else {
