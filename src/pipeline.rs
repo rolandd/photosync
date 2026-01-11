@@ -634,7 +634,6 @@ mod tests {
                 .join("25")
         );
     }
-
 }
 
 /// Final handler for files with complete metadata.

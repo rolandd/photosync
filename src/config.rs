@@ -183,7 +183,9 @@ fn parse_config_str(contents: &str) -> Result<Config> {
 /// Returns Result::Ok if safe, Result::Err if unsafe.
 fn is_safe_path(path_str: &str) -> Result<()> {
     if path_str.contains('\\') {
-        anyhow::bail!("Backslashes are not allowed. Please use forward slashes '/' for portability.");
+        anyhow::bail!(
+            "Backslashes are not allowed. Please use forward slashes '/' for portability."
+        );
     }
 
     let path = Path::new(path_str);
