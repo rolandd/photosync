@@ -52,7 +52,11 @@ pub struct Config {
     pub target_dir: Option<PathBuf>,
 
     /// Destination directory structure template.
+    /// Destination directory structure template.
     pub dest_template: Option<String>,
+
+    /// Directories to exclude from scanning (e.g., "Macintosh HD", "$RECYCLE.BIN").
+    pub exclude_dirs: Vec<String>,
 }
 
 /// Raw directories section from TOML.
@@ -61,6 +65,7 @@ struct RawDirs {
     source: Option<PathBuf>,
     target: Option<PathBuf>,
     template: Option<String>,
+    exclude: Option<Vec<String>>,
 }
 
 /// Raw configuration as deserialized from TOML.
@@ -180,6 +185,7 @@ fn parse_config_str(contents: &str) -> Result<Config> {
         source_dir: raw.dirs.source.map(expand_path),
         target_dir: raw.dirs.target.map(expand_path),
         dest_template,
+        exclude_dirs: raw.dirs.exclude.unwrap_or_default(),
     })
 }
 
@@ -214,13 +220,14 @@ pub fn config_path() -> Option<PathBuf> {
 
 /// Generate a starter configuration file template.
 pub fn generate_config_template() -> String {
-    r#"# Photosync Configuration
+    let base_template = r#"# Photosync Configuration
 # Docs: https://github.com/rolandd/photosync#configuration
 
 [dirs]
 # source = "/media/your_username"   # Where to scan for photos
 # target = "$XDG_PICTURES_DIR"       # Where to copy photos
 # template = "{camera}/{year}/{month}/{day}"  # Directory structure
+# exclude = []                        # Directories to ignore
 #
 # Supported variables (use $VAR or ${VAR} syntax):
 #   $HOME             - Your home directory
@@ -235,7 +242,35 @@ pub fn generate_config_template() -> String {
 # "iPhone" = "iPhone"
 # "Pixel" = "Pixel"
 "#
-    .to_string()
+    .to_string();
+
+    // OS-specific adjustments for the template
+    let (default_source, default_exclude) = if cfg!(target_os = "macos") {
+        (
+            r#"source = "/Volumes"             # Scan all mounted volumes"#,
+            r#"exclude = ["Macintosh HD"]      # Ignore main drive"#,
+        )
+    } else if cfg!(windows) {
+        (
+            r#"# source = "E:/"                # Scan specific drive"#,
+            r#"exclude = ["System Volume Information", "$RECYCLE.BIN"]"#,
+        )
+    } else {
+        (
+            r#"# source = "/media/your_username"   # Where to scan for photos"#,
+            r#"# exclude = []                        # Directories to ignore"#,
+        )
+    };
+
+    base_template
+        .replace(
+            r#"# source = "/media/your_username"   # Where to scan for photos"#,
+            default_source,
+        )
+        .replace(
+            r#"# exclude = []                        # Directories to ignore"#,
+            default_exclude,
+        )
 }
 
 impl Config {
@@ -247,6 +282,7 @@ impl Config {
             source_dir: None,
             target_dir: None,
             dest_template: None,
+            exclude_dirs: Vec::new(),
         }
     }
 

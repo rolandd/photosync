@@ -57,8 +57,10 @@ pub fn spawn_pipeline(
     let handler_progress = progress_tx.clone();
 
     // Spawn the producer thread (file walker)
+    // Extract exclude_dirs to pass to walker
+    let exclude_dirs = config.exclude_dirs.clone();
     let walker_handle = thread::spawn(move || {
-        file_walker(source_dir, walker_tx, walker_progress);
+        file_walker(source_dir, exclude_dirs, walker_tx, walker_progress);
     });
 
     // Spawn the processor thread (EXIF extraction)
@@ -157,13 +159,27 @@ fn files_are_equal(path1: &Path, path2: &Path) -> io::Result<bool> {
 }
 
 /// Discovers all files under source directories.
-fn file_walker(source_dir: PathBuf, tx: SyncSender<PathBuf>, progress_tx: SyncSender<ProgressMsg>) {
+/// Discovers all files under source directories.
+fn file_walker(
+    source_dir: PathBuf,
+    exclude_dirs: Vec<String>,
+    tx: SyncSender<PathBuf>,
+    progress_tx: SyncSender<ProgressMsg>,
+) {
     send_progress(
         &progress_tx,
         ProgressMsg::ScanningDir(SourcePath::new(source_dir.clone())),
     );
 
-    for walk_entry in WalkDir::new(&source_dir).follow_links(false) {
+    let walker = WalkDir::new(&source_dir)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(move |e: &walkdir::DirEntry| {
+            let name = e.file_name().to_string_lossy();
+            !exclude_dirs.iter().any(|ex| name == *ex)
+        });
+
+    for walk_entry in walker {
         match walk_entry {
             Ok(entry) => {
                 if entry.file_type().is_file() {
@@ -633,6 +649,40 @@ mod tests {
                 .join("10")
                 .join("25")
         );
+    }
+
+    #[test]
+    fn test_file_walker_exclude() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src");
+        std::fs::create_dir(&src_dir).unwrap();
+
+        // Create "keep" and "ignore" subdirectories
+        let keep_dir = src_dir.join("keep");
+        let ignore_dir = src_dir.join("ignore");
+        std::fs::create_dir(&keep_dir).unwrap();
+        std::fs::create_dir(&ignore_dir).unwrap();
+
+        // Create files
+        create_test_file(&keep_dir, "good.jpg", b"");
+        create_test_file(&ignore_dir, "bad.jpg", b"");
+
+        let (tx, rx) = std::sync::mpsc::sync_channel(10);
+        let (progress_tx, _) = std::sync::mpsc::sync_channel(10);
+
+        // Run walker with "ignore" in exclude list
+        file_walker(src_dir, vec!["ignore".to_string()], tx, progress_tx);
+
+        // Collect results
+        let mut paths = Vec::new();
+        while let Ok(path) = rx.try_recv() {
+            paths.push(path);
+        }
+
+        // Verify
+        assert_eq!(paths.len(), 1);
+        assert!(paths[0].to_string_lossy().contains("good.jpg"));
+        assert!(!paths[0].to_string_lossy().contains("ignore"));
     }
 }
 

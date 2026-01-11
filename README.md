@@ -23,6 +23,33 @@ would be copied to:
 
 The directory structure is configurable using a template system.
 
+## Multi-Platform Support (Experimental)
+
+**Note:** Photosync is primarily developed and tested on
+**Linux**. Support for macOS and Windows is implemented but considered
+**experimental and untested**. Please verify your configuration with a
+dry run (`-n`) before usage.
+
+### macOS
+- **Source:** SD cards are typically mounted at `/Volumes`. Running
+  `photosync --init` on macOS will automatically suggest `source =
+  "/Volumes"` and `exclude = ["Macintosh HD"]` to avoid scanning your
+  system drive.
+- **Permissions:** You may need to grant your terminal application
+  permission to access "Removable Volumes" in System Settings.
+
+### Windows
+- **Source:** You generally need to specify a drive letter (e.g.,
+  `source = "D:/"`).
+- **Excludes:** Creating a config with `--init` on Windows will
+  default to excluding common system folders like `System Volume
+  Information` and `$RECYCLE.BIN`.
+
+### Note on Exclusions
+- **Case Sensitivity:** The `exclude` list uses **exact, case-sensitive**
+  matching. Ensure the casing in your config matches the actual directory
+  names (e.g., `"Macintosh HD"`, not `"macintosh hd"`).
+
 ## Installation
 
 Requires Rust 2024 edition.
