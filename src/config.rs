@@ -77,6 +77,40 @@ fn sort_camera_dirs(dirs: &mut [(String, String)]) {
     dirs.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(&b.0)));
 }
 
+/// Expands supported variables in a path string.
+///
+/// Supported variables (both `$VAR` and `${VAR}` syntax):
+/// - `$HOME` / `${HOME}` - User's home directory from environment
+/// - `$XDG_PICTURES_DIR` / `${XDG_PICTURES_DIR}` - User's pictures directory (via dirs crate)
+///
+/// Unknown variables are left unexpanded.
+fn expand_path(path: PathBuf) -> PathBuf {
+    let s = path.to_string_lossy();
+
+    // If no $ in path, return as-is (common case optimization)
+    if !s.contains('$') {
+        return path;
+    }
+
+    let mut result = s.into_owned();
+
+    // Expand $HOME / ${HOME} using dirs crate for cross-platform support
+    if let Some(home) = dirs::home_dir() {
+        let home_str = home.to_string_lossy();
+        result = result.replace("${HOME}", &home_str);
+        result = result.replace("$HOME", &home_str);
+    }
+
+    // Expand $XDG_PICTURES_DIR / ${XDG_PICTURES_DIR} using dirs crate
+    if let Some(pictures) = dirs::picture_dir() {
+        let pictures_str = pictures.to_string_lossy();
+        result = result.replace("${XDG_PICTURES_DIR}", &pictures_str);
+        result = result.replace("$XDG_PICTURES_DIR", &pictures_str);
+    }
+
+    PathBuf::from(result)
+}
+
 /// Loads the effective configuration.
 ///
 /// Priority:
@@ -143,8 +177,8 @@ fn parse_config_str(contents: &str) -> Result<Config> {
 
     Ok(Config {
         camera_dirs,
-        source_dir: raw.dirs.source,
-        target_dir: raw.dirs.target,
+        source_dir: raw.dirs.source.map(expand_path),
+        target_dir: raw.dirs.target.map(expand_path),
         dest_template,
     })
 }
@@ -185,8 +219,12 @@ pub fn generate_config_template() -> String {
 
 [dirs]
 # source = "/media/your_username"   # Where to scan for photos
-# target = "/home/your_username/Pictures"  # Where to copy photos
+# target = "$XDG_PICTURES_DIR"       # Where to copy photos
 # template = "{camera}/{year}/{month}/{day}"  # Directory structure
+#
+# Supported variables (use $VAR or ${VAR} syntax):
+#   $HOME             - Your home directory
+#   $XDG_PICTURES_DIR - Your Pictures directory (e.g., ~/Pictures)
 
 [cameras]
 # Map camera model substrings to folder names.
@@ -433,5 +471,64 @@ template = "../escape/{camera}"
         let config = parse_config_str(toml).unwrap();
         // Template should be None because it's unsafe
         assert!(config.dest_template.is_none());
+    }
+
+    // Path expansion tests
+
+    #[test]
+    fn test_expand_path_no_variables() {
+        let path = PathBuf::from("/some/path/without/variables");
+        assert_eq!(expand_path(path.clone()), path);
+    }
+
+    #[test]
+    fn test_expand_path_home() {
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(
+            expand_path(PathBuf::from("$HOME/Pictures")),
+            home.join("Pictures")
+        );
+        assert_eq!(
+            expand_path(PathBuf::from("${HOME}/Photos")),
+            home.join("Photos")
+        );
+    }
+
+    #[test]
+    fn test_expand_path_xdg_pictures_dir() {
+        if let Some(pictures) = dirs::picture_dir() {
+            assert_eq!(
+                expand_path(PathBuf::from("$XDG_PICTURES_DIR")),
+                pictures.clone()
+            );
+            assert_eq!(
+                expand_path(PathBuf::from("${XDG_PICTURES_DIR}/archive")),
+                pictures.join("archive")
+            );
+        }
+    }
+
+    #[test]
+    fn test_expand_path_combined() {
+        let home = dirs::home_dir().unwrap();
+        let home_str = home.to_string_lossy();
+        // Path with HOME followed by literal text
+        assert_eq!(
+            expand_path(PathBuf::from("${HOME}backup")),
+            PathBuf::from(format!("{}backup", home_str))
+        );
+    }
+
+    #[test]
+    fn test_parse_config_expands_dirs() {
+        let home = dirs::home_dir().unwrap();
+        let toml = r#"
+[dirs]
+source = "$HOME/media"
+target = "${HOME}/Pictures"
+"#;
+        let config = parse_config_str(toml).unwrap();
+        assert_eq!(config.source_dir, Some(home.join("media")));
+        assert_eq!(config.target_dir, Some(home.join("Pictures")));
     }
 }

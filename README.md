@@ -86,9 +86,10 @@ Create `photosync.toml` in the current directory or
 
 ```toml
 # Optional: Override default paths
+# Supported variables: $HOME, $XDG_PICTURES_DIR (also ${VAR} syntax)
 [dirs]
 source = "/media/roland"
-target = "/home/roland/Pictures"
+target = "$XDG_PICTURES_DIR"
 template = "{camera}/{year}/{month}/{day}"
 
 # Map camera model substrings to destination folders
