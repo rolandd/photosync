@@ -3,7 +3,7 @@
 
 use std::env;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -28,6 +28,10 @@ pub struct Args {
     /// Override the target directory (defaults to `$HOME/Pictures` or configured value)
     #[arg(long)]
     pub target: Option<PathBuf>,
+
+    /// Destination directory structure template (default: "{camera}/{year}/{month}/{day}")
+    #[arg(long)]
+    pub template: Option<String>,
 }
 
 /// Configuration file structure.
@@ -42,6 +46,9 @@ pub struct Config {
 
     /// Optional target directory override.
     pub target_dir: Option<PathBuf>,
+
+    /// Destination directory structure template.
+    pub dest_template: Option<String>,
 }
 
 /// Raw directories section from TOML.
@@ -49,6 +56,7 @@ pub struct Config {
 struct RawDirs {
     source: Option<PathBuf>,
     target: Option<PathBuf>,
+    template: Option<String>,
 }
 
 /// Raw configuration as deserialized from TOML.
@@ -108,15 +116,57 @@ fn parse_config_str(contents: &str) -> Result<Config> {
     let mut camera_dirs: Vec<_> = if raw.cameras.is_empty() {
         default_camera_dirs()
     } else {
-        raw.cameras.into_iter().collect()
+        // Validate and collect user-provided camera mappings
+        raw.cameras
+            .into_iter()
+            .filter(|(model, dest_dir)| {
+                if is_safe_path(dest_dir) {
+                    true
+                } else {
+                    eprintln!(
+                        "Warning: Camera directory mapping '{}' -> '{}' is unsafe (absolute or contains '..'). Skipping.",
+                        model, dest_dir
+                    );
+                    false
+                }
+            })
+            .collect()
     };
     sort_camera_dirs(&mut camera_dirs);
+
+    // Validate template if present
+    let dest_template = raw.dirs.template.and_then(validate_template);
 
     Ok(Config {
         camera_dirs,
         source_dir: raw.dirs.source,
         target_dir: raw.dirs.target,
+        dest_template,
     })
+}
+
+/// Helper to validate if a directory path is safe.
+/// Returns false if path is absolute or contains parent directory traversal.
+fn is_safe_path(path_str: &str) -> bool {
+    let path = Path::new(path_str);
+    !path.is_absolute()
+        && !path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+}
+
+/// Validates a destination template string.
+/// Returns `Some(template)` if valid, `None` if invalid (with a warning printed).
+pub fn validate_template(template: String) -> Option<String> {
+    // Check for path traversal attempts
+    if template.split('/').any(|c| c == "..") {
+        eprintln!(
+            "Warning: Template '{}' contains unsafe '..' path traversal. Ignoring.",
+            template
+        );
+        return None;
+    }
+    Some(template)
 }
 
 /// Default camera model mappings.
@@ -141,6 +191,7 @@ impl Config {
             camera_dirs,
             source_dir: None,
             target_dir: None,
+            dest_template: None,
         }
     }
 
@@ -253,6 +304,7 @@ mod tests {
         // Should use all defaults
         assert!(config.source_dir.is_none());
         assert!(config.target_dir.is_none());
+        assert!(config.dest_template.is_none());
         assert!(!config.camera_dirs.is_empty()); // default cameras
         assert!(config.get_dest_dir("Canon EOS R6").is_some());
     }
@@ -263,6 +315,7 @@ mod tests {
 [dirs]
 source = "/media/test"
 target = "/home/test/Pictures"
+template = "{camera}/{year}"
 "#;
         let config = parse_config_str(toml).unwrap();
         assert_eq!(config.source_dir, Some(PathBuf::from("/media/test")));
@@ -270,6 +323,7 @@ target = "/home/test/Pictures"
             config.target_dir,
             Some(PathBuf::from("/home/test/Pictures"))
         );
+        assert_eq!(config.dest_template, Some("{camera}/{year}".to_string()));
         // Should still have default cameras
         assert!(config.get_dest_dir("Canon EOS R6").is_some());
     }
@@ -344,5 +398,67 @@ target = "/archive/photos"
         let config = parse_config_str(toml).unwrap();
         // Longer match should win
         assert_eq!(config.get_dest_dir("Canon EOS R6"), Some("long-match"));
+    }
+
+    #[test]
+    fn test_parse_config_rejects_unsafe_paths() {
+        let toml = r#"
+[cameras]
+"Safe" = "safe-dir"
+"Unsafe1" = "/abs/path"
+"Unsafe2" = "../parent"
+"Unsafe3" = "a/../../b"
+"#;
+        let config = parse_config_str(toml).unwrap();
+        assert!(config.get_dest_dir("Safe").is_some());
+        assert!(config.get_dest_dir("Unsafe1").is_none());
+        assert!(config.get_dest_dir("Unsafe2").is_none());
+        assert!(config.get_dest_dir("Unsafe3").is_none());
+    }
+
+    #[test]
+    fn test_is_safe_path() {
+        assert!(is_safe_path("simple"));
+        assert!(is_safe_path("nested/dir"));
+        assert!(is_safe_path("with spaces"));
+        assert!(is_safe_path(".")); // current dir is safe-ish, though maybe redundant
+
+        // Unsafe paths
+        assert!(!is_safe_path("/absolute"));
+        assert!(!is_safe_path("/"));
+        assert!(!is_safe_path("../parent"));
+        assert!(!is_safe_path("nested/../parent"));
+        assert!(!is_safe_path(".."));
+    }
+
+    #[test]
+    fn test_validate_template_valid() {
+        assert_eq!(
+            validate_template("{camera}/{year}".to_string()),
+            Some("{camera}/{year}".to_string())
+        );
+        assert_eq!(
+            validate_template("{year}/{month}/{day}".to_string()),
+            Some("{year}/{month}/{day}".to_string())
+        );
+    }
+
+    #[test]
+    fn test_validate_template_unsafe_traversal() {
+        // Templates with .. should be rejected
+        assert_eq!(validate_template("../{camera}".to_string()), None);
+        assert_eq!(validate_template("{camera}/../escape".to_string()), None);
+        assert_eq!(validate_template("foo/..".to_string()), None);
+    }
+
+    #[test]
+    fn test_parse_config_rejects_unsafe_template() {
+        let toml = r#"
+[dirs]
+template = "../escape/{camera}"
+"#;
+        let config = parse_config_str(toml).unwrap();
+        // Template should be None because it's unsafe
+        assert!(config.dest_template.is_none());
     }
 }

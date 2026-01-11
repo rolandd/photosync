@@ -17,7 +17,7 @@ mod pipeline;
 mod progress;
 mod tui;
 
-use config::{Args, load_config};
+use config::{load_config, validate_template, Args};
 use progress::{ProgressMsg, Summary};
 
 /// Channel buffer size for the progress channel.
@@ -74,7 +74,12 @@ fn run_text_mode(rx: Receiver<ProgressMsg>) -> Summary {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let config = load_config()?;
+    let mut config = load_config()?;
+
+    // Validate and set CLI template override (uses same validation as config file)
+    if let Some(t) = args.template {
+        config.dest_template = validate_template(t);
+    }
 
     // Determine paths
     let source_dir = config.source_dir(args.source.as_ref())?;

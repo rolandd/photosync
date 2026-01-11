@@ -26,6 +26,8 @@ would be copied to:
 ~/Pictures/CanonR6-images/2023/10/25/IMG_1234.CR3
 ```
 
+The directory structure is configurable using a template system.
+
 ## Installation
 
 Requires Rust 2024 edition.
@@ -48,6 +50,9 @@ photosync -n
 # Override source and target directories
 photosync --source /path/to/card --target /path/to/photos
 
+# Use a custom directory structure
+photosync --template "{year}/{month}/{camera}"
+
 # Disable TUI for piping/scripting
 photosync --no-tui
 ```
@@ -60,6 +65,7 @@ photosync --no-tui
 | `--no-tui` | Disable interactive UI, use plain text output |
 | `--source <PATH>` | Override source directory |
 | `--target <PATH>` | Override target directory |
+| `--template <FMT>`| Override destination directory template |
 
 ## Configuration
 
@@ -71,6 +77,7 @@ Create `photosync.toml` in the current directory or
 [dirs]
 source = "/media/roland"
 target = "/home/roland/Pictures"
+template = "{camera}/{year}/{month}/{day}"
 
 # Map camera model substrings to destination folders
 [cameras]
@@ -80,6 +87,24 @@ target = "/home/roland/Pictures"
 "HERO13" = "GoPro-Hero13"
 ```
 
+### Template System
+
+The destination directory structure can be customized using the `template` option.
+The following tags are available:
+
+- `{camera}`: The matched camera directory name (from config)
+- `{year}`: 4-digit year (e.g., "2023")
+- `{month}`: 2-digit month (e.g., "10")
+- `{day}`: 2-digit day (e.g., "25")
+
+The default template is `{camera}/{year}/{month}/{day}`.
+
+**Note on Safety:**
+- Camera directory names defined in the config must be relative paths
+  and cannot contain `..` (parent directory traversal).
+- The resulting path from the template is also validated to ensure it
+  does not attempt to traverse outside the target directory.
+
 Camera matching uses longest-match-first semantics, so more specific
 patterns take precedence.
 
@@ -88,10 +113,13 @@ patterns take precedence.
 - [nom-exif](https://github.com/nickel-org/nom-exif) - EXIF parsing
 - [clap](https://github.com/clap-rs/clap) - Command-line argument parsing
 - [ratatui](https://github.com/ratatui/ratatui) - Terminal UI
-- [crossbeam-channel](https://github.com/crossbeam-rs/crossbeam) - Concurrent pipeline channels
+- [crossterm](https://github.com/crossterm-rs/crossterm) - Cross-platform terminal manipulation
 - [walkdir](https://github.com/BurntSushi/walkdir) - Recursive directory traversal
 - [chrono](https://github.com/chronotope/chrono) - Date/time handling
+- [dirs](https://github.com/dirs-dev/dirs-rs) - Platform-specific standard directories (Pictures, config, etc.)
+- [anyhow](https://github.com/dtolnay/anyhow) - Error handling
+- [toml](https://github.com/toml-rs/toml) - Configuration file parsing
 
 ## License
 
-MIT License - Copyright 2026 Roland Dreier <roland@kernel.org>
+[MIT License](https://github.com/rolandd/photosync/blob/main/LICENSE) - Copyright 2026 Roland Dreier <roland@kernel.org>

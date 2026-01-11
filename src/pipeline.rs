@@ -265,21 +265,74 @@ fn parse_exif_date(s: &str) -> Option<NaiveDate> {
 }
 
 /// Helper to compute the destination directory for a file.
-/// Returns `None` if the camera model is unknown.
+/// Returns `None` if the camera model is unknown or if the template is invalid.
 fn compute_dest_dir(
     target_dir: &Path,
     config: &Config,
     model: &str,
     date: NaiveDate,
 ) -> Option<PathBuf> {
-    let camera_dir = config.get_dest_dir(model)?;
-    Some(
-        target_dir
-            .join(camera_dir)
-            .join(date.format("%Y").to_string())
-            .join(date.format("%m").to_string())
-            .join(date.format("%d").to_string()),
-    )
+    let camera_dir_name = config.get_dest_dir(model)?;
+
+    // Note: camera_dir_name is already validated when loading config (no absolute paths or '..')
+
+    let template = config
+        .dest_template
+        .as_deref()
+        .unwrap_or("{camera}/{year}/{month}/{day}");
+
+    let mut path_str = template.to_string();
+
+    // Replacements
+    // Note: We perform simple replacements.
+    path_str = path_str.replace("{camera}", camera_dir_name);
+    path_str = path_str.replace("{year}", &date.format("%Y").to_string());
+    path_str = path_str.replace("{month}", &date.format("%m").to_string());
+    path_str = path_str.replace("{day}", &date.format("%d").to_string());
+
+    // Basic validation: Check for remaining curly braces which might indicate broken tags
+    if path_str.contains('{') || path_str.contains('}') {
+        eprintln!(
+            "Warning: Malformed template or unknown tag in '{template}'. Result: '{path_str}'"
+        );
+        return None;
+    }
+
+    // Construct the full path
+    // We split by '/' to handle the template structure.
+    // Even if the replacement values contain path separators (e.g. camera_dir_name="A/B"),
+    // split('/') will break them down correctly for PathBuf::push.
+    // We also check for '..' components dynamically.
+
+    let mut dest_path = target_dir.to_path_buf();
+    for component in path_str.split('/').filter(|c| !c.is_empty()) {
+        if component == ".." || component == "." {
+            // ".." is unsafe. "." is redundant but technically safe, but let's avoid it to be clean.
+            if component == ".." {
+                eprintln!(
+                    "Warning: Template resulted in '..' component, which is unsafe. Path: '{path_str}'"
+                );
+                return None;
+            }
+            continue;
+        }
+
+        // On Windows, checking for drive letters in components
+        if component.contains(':') {
+            // Rudimentary check for drive letters or absolute paths injected via components
+            // (e.g. if replacement was "C:\Bad")
+            if Path::new(component).is_absolute() {
+                eprintln!(
+                    "Warning: Component '{component}' appears to be absolute. Path: '{path_str}'"
+                );
+                return None;
+            }
+        }
+
+        dest_path.push(component);
+    }
+
+    Some(dest_path)
 }
 
 #[cfg(test)]
@@ -382,6 +435,73 @@ mod tests {
         let file2 = dir.path().join("missing.txt");
 
         assert!(files_are_equal(&file1, &file2).is_err());
+    }
+
+    #[test]
+    fn test_compute_dest_dir_default() {
+        // config needs to be created manually since it's in another module
+        let mut config = Config::default();
+        config.camera_dirs = vec![("Model".to_string(), "CameraDir".to_string())];
+        // default template is implied when None
+
+        let target = PathBuf::from("/target");
+        let date = NaiveDate::from_ymd_opt(2023, 10, 25).unwrap();
+
+        let dest = compute_dest_dir(&target, &config, "Model", date).unwrap();
+        // Use chained joins for cross-platform compatibility
+        assert_eq!(
+            dest,
+            target.join("CameraDir").join("2023").join("10").join("25")
+        );
+    }
+
+    #[test]
+    fn test_compute_dest_dir_custom_template() {
+        let mut config = Config::default();
+        config.camera_dirs = vec![("Model".to_string(), "CameraDir".to_string())];
+        config.dest_template = Some("{year}-{month}/{camera}".to_string());
+
+        let target = PathBuf::from("/target");
+        let date = NaiveDate::from_ymd_opt(2023, 10, 25).unwrap();
+
+        let dest = compute_dest_dir(&target, &config, "Model", date).unwrap();
+        // Use chained joins for cross-platform compatibility
+        assert_eq!(dest, target.join("2023-10").join("CameraDir"));
+    }
+
+    #[test]
+    fn test_compute_dest_dir_unknown_camera() {
+        let config = Config::default(); // empty camera_dirs
+        let target = PathBuf::from("/target");
+        let date = NaiveDate::from_ymd_opt(2023, 10, 25).unwrap();
+
+        assert!(compute_dest_dir(&target, &config, "Unknown", date).is_none());
+    }
+
+    #[test]
+    fn test_compute_dest_dir_malformed_template() {
+        let mut config = Config::default();
+        config.camera_dirs = vec![("Model".to_string(), "CameraDir".to_string())];
+        config.dest_template = Some("{camera}/{year}/{unknown_tag}".to_string());
+
+        let target = PathBuf::from("/target");
+        let date = NaiveDate::from_ymd_opt(2023, 10, 25).unwrap();
+
+        // Should return None because of unknown tag left in string
+        assert!(compute_dest_dir(&target, &config, "Model", date).is_none());
+    }
+
+    #[test]
+    fn test_compute_dest_dir_unsafe_path() {
+        let mut config = Config::default();
+        config.camera_dirs = vec![("Model".to_string(), "CameraDir".to_string())];
+        config.dest_template = Some("../{camera}".to_string());
+
+        let target = PathBuf::from("/target");
+        let date = NaiveDate::from_ymd_opt(2023, 10, 25).unwrap();
+
+        // Should return None because of ".."
+        assert!(compute_dest_dir(&target, &config, "Model", date).is_none());
     }
 }
 
