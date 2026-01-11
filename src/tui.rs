@@ -442,16 +442,21 @@ mod tests {
     }
 
     #[test]
-    fn test_summary() {
+    fn test_handle_message_copy_skipped() {
         let mut app = App::default();
-        app.summary.files_copied = 5;
-        app.summary.files_skipped = 2;
-        app.summary.files_found = 10;
-        app.summary.bytes_copied = 1024 * 1024;
-        app.summary.total_duration = Duration::from_secs(1);
-
-        assert_eq!(app.summary.files_copied, 5);
-        assert_eq!(app.summary.files_skipped, 2);
-        assert_eq!(app.summary.files_found, 10);
+        app.files_to_copy = 5;
+        app.handle_message(ProgressMsg::CopySkipped {
+            filename: "test.jpg".to_string(),
+        });
+        assert_eq!(app.summary.files_skipped, 1);
+        assert_eq!(app.files_to_copy, 4); // decremented
+        assert_eq!(app.recent_items.len(), 1);
+        assert!(
+            app.recent_items
+                .front()
+                .unwrap()
+                .text
+                .contains("already exists")
+        );
     }
 }

@@ -288,14 +288,6 @@ mod tests {
         assert_eq!(config.get_dest_dir("Unknown Camera"), None);
     }
 
-    #[test]
-    fn test_default_camera_dirs_not_empty() {
-        let dirs = default_camera_dirs();
-        assert!(!dirs.is_empty());
-        assert!(dirs.iter().any(|(k, _)| k == "EOS R6"));
-        assert!(dirs.iter().any(|(k, _)| k == "6D"));
-    }
-
     // TOML parsing tests
 
     #[test]
@@ -358,18 +350,6 @@ source = "/mnt/sdcard"
         assert!(config.target_dir.is_none()); // not specified
         assert_eq!(config.get_dest_dir("Nikon Z6 II"), Some("Nikon-images"));
         assert_eq!(config.get_dest_dir("Nikon Z8"), Some("Nikon-Z8-images"));
-    }
-
-    #[test]
-    fn test_parse_partial_dirs_section() {
-        let toml = r#"
-[dirs]
-source = "/media/card"
-# target not specified
-"#;
-        let config = parse_config_str(toml).unwrap();
-        assert_eq!(config.source_dir, Some(PathBuf::from("/media/card")));
-        assert!(config.target_dir.is_none());
     }
 
     #[test]

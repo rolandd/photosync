@@ -503,6 +503,61 @@ mod tests {
         // Should return None because of ".."
         assert!(compute_dest_dir(&target, &config, "Model", date).is_none());
     }
+
+    #[test]
+    fn test_parse_exif_date_with_whitespace() {
+        // Leading/trailing whitespace should be trimmed
+        assert_eq!(
+            parse_exif_date("  2023:10:25 14:30:00  "),
+            Some(NaiveDate::from_ymd_opt(2023, 10, 25).unwrap())
+        );
+        assert_eq!(
+            parse_exif_date("\n2023:10:25\t"),
+            Some(NaiveDate::from_ymd_opt(2023, 10, 25).unwrap())
+        );
+    }
+
+    #[test]
+    fn test_files_are_equal_large_file() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Create files larger than FILE_COMPARE_CHUNK_SIZE (128 KB)
+        let large_content: Vec<u8> = (0..200_000).map(|i| (i % 256) as u8).collect();
+        let file1 = create_test_file(dir.path(), "large1.bin", &large_content);
+        let file2 = create_test_file(dir.path(), "large2.bin", &large_content);
+
+        assert!(files_are_equal(&file1, &file2).unwrap());
+
+        // Create a file that differs only in the second chunk
+        let mut different_content = large_content.clone();
+        different_content[150_000] = 0xFF; // Modify byte in second chunk
+        let file3 = create_test_file(dir.path(), "large3.bin", &different_content);
+
+        assert!(!files_are_equal(&file1, &file3).unwrap());
+    }
+
+    #[test]
+    fn test_compute_dest_dir_nested_camera_path() {
+        let mut config = Config::default();
+        // Camera dir with nested path
+        config.camera_dirs = vec![("Model".to_string(), "Canon/EOS/R6".to_string())];
+
+        let target = PathBuf::from("/target");
+        let date = NaiveDate::from_ymd_opt(2023, 10, 25).unwrap();
+
+        let dest = compute_dest_dir(&target, &config, "Model", date).unwrap();
+        // Should properly join nested path components
+        assert_eq!(
+            dest,
+            target
+                .join("Canon")
+                .join("EOS")
+                .join("R6")
+                .join("2023")
+                .join("10")
+                .join("25")
+        );
+    }
 }
 
 /// Final handler for files with complete metadata.

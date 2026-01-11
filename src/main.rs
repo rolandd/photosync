@@ -17,7 +17,7 @@ mod pipeline;
 mod progress;
 mod tui;
 
-use config::{load_config, validate_template, Args};
+use config::{Args, load_config, validate_template};
 use progress::{ProgressMsg, Summary};
 
 /// Channel buffer size for the progress channel.

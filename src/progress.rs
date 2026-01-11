@@ -279,4 +279,45 @@ mod tests {
         assert!(output.contains("/dest/IMG_001.jpg"));
         assert!(output.contains("/src/IMG_002.jpg"));
     }
+
+    #[test]
+    fn test_summary_update() {
+        let mut summary = Summary::default();
+
+        // FileFound increments files_found
+        assert!(!summary.update(&ProgressMsg::FileFound));
+        assert_eq!(summary.files_found, 1);
+
+        // CopyComplete updates counters
+        assert!(!summary.update(&ProgressMsg::CopyComplete {
+            filename: "test.jpg".to_string(),
+            size: 1024,
+            duration: Duration::from_millis(100),
+        }));
+        assert_eq!(summary.files_copied, 1);
+        assert_eq!(summary.bytes_copied, 1024);
+
+        // CopySkipped increments skipped
+        assert!(!summary.update(&ProgressMsg::CopySkipped {
+            filename: "skip.jpg".to_string(),
+        }));
+        assert_eq!(summary.files_skipped, 1);
+
+        // CopyError increments errored
+        assert!(!summary.update(&ProgressMsg::CopyError {
+            filename: "err.jpg".to_string(),
+            error: "test error".to_string(),
+        }));
+        assert_eq!(summary.files_errored, 1);
+
+        // SuspiciousDuplicate adds to list
+        assert!(!summary.update(&ProgressMsg::SuspiciousDuplicate {
+            src: PathBuf::from("/src/dup.jpg"),
+            dest: PathBuf::from("/dest/dup.jpg"),
+        }));
+        assert_eq!(summary.suspicious_duplicates.len(), 1);
+
+        // Done returns true
+        assert!(summary.update(&ProgressMsg::Done));
+    }
 }
