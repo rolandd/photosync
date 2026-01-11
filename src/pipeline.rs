@@ -1,3 +1,10 @@
+//! Pipeline orchestration for file processing.
+//!
+//! This module manages the multi-threaded pipeline:
+//! 1. **Walker**: Discovers files in source directories
+//! 2. **Processor**: Extracts EXIF metadata
+//! 3. **Handler**: Copies files to destination with deduplication
+
 use std::fs::{self, File};
 use std::io::{self, BufReader, Read};
 use std::path::{Path, PathBuf};
@@ -10,6 +17,7 @@ use nom_exif::{Exif, ExifIter, ExifTag, MediaParser, MediaSource};
 use walkdir::WalkDir;
 
 use crate::config::Config;
+use crate::paths::{DestPath, SourcePath};
 use crate::progress::ProgressMsg;
 
 /// Channel buffer size for pipeline stages.
@@ -18,7 +26,7 @@ const CHANNEL_BUFFER_SIZE: usize = 1024;
 /// Represents a file with complete EXIF metadata.
 #[derive(Debug)]
 pub struct FileInfo {
-    pub path: PathBuf,
+    pub path: SourcePath,
     pub model: String,
     pub date: NaiveDate,
 }
@@ -93,8 +101,12 @@ pub fn spawn_pipeline(
 }
 
 /// Helper to send progress messages, suppressing errors.
+#[allow(unused_variables)]
 fn send_progress(tx: &SyncSender<ProgressMsg>, msg: ProgressMsg) {
-    let _ = tx.send(msg);
+    if let Err(e) = tx.send(msg) {
+        #[cfg(debug_assertions)]
+        eprintln!("Warning: Failed to send progress message: {:?}", e);
+    }
 }
 
 /// Helper to report errors to the UI
@@ -147,7 +159,10 @@ fn files_are_equal(path1: &Path, path2: &Path) -> io::Result<bool> {
 
 /// Discovers all files under source directories.
 fn file_walker(source_dir: PathBuf, tx: SyncSender<PathBuf>, progress_tx: SyncSender<ProgressMsg>) {
-    send_progress(&progress_tx, ProgressMsg::ScanningDir(source_dir.clone()));
+    send_progress(
+        &progress_tx,
+        ProgressMsg::ScanningDir(SourcePath::new(source_dir.clone())),
+    );
 
     for walk_entry in WalkDir::new(&source_dir)
         .follow_links(false)
@@ -203,11 +218,15 @@ fn file_processor(
             send_progress(
                 &progress_tx,
                 ProgressMsg::ExifExtracted {
-                    path: path.clone(),
+                    path: SourcePath::new(path.clone()),
                     model: model.clone(),
                 },
             );
-            let file_info = FileInfo { path, model, date };
+            let file_info = FileInfo {
+                path: SourcePath::new(path),
+                model,
+                date,
+            };
             if tx.send(file_info).is_err() {
                 return;
             }
@@ -265,7 +284,7 @@ fn parse_exif_date(s: &str) -> Option<NaiveDate> {
 }
 
 /// Result of computing a destination directory.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum DestDirResult {
     Ok(PathBuf),
     UnknownCamera,
@@ -661,7 +680,7 @@ fn file_handler(
                     &progress_tx,
                     ProgressMsg::SuspiciousDuplicate {
                         src: info.path.clone(),
-                        dest: dest_path.clone(),
+                        dest: DestPath::new(dest_path.clone()),
                     },
                 );
             }
@@ -682,7 +701,7 @@ fn file_handler(
                 &progress_tx,
                 ProgressMsg::CopyStarted {
                     src: info.path.clone(),
-                    dest: dest_path.clone(),
+                    dest: DestPath::new(dest_path.clone()),
                     size,
                 },
             );
@@ -710,7 +729,7 @@ fn file_handler(
             &progress_tx,
             ProgressMsg::CopyStarted {
                 src: info.path.clone(),
-                dest: dest_path.clone(),
+                dest: DestPath::new(dest_path.clone()),
                 size,
             },
         );

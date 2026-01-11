@@ -11,7 +11,6 @@
 
 use std::collections::VecDeque;
 use std::io::stdout;
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -26,6 +25,7 @@ use ratatui::{
 };
 use std::sync::mpsc::Receiver;
 
+use crate::paths::{DestPath, SourcePath};
 use crate::progress::{self, ProgressMsg, Summary};
 
 /// Maximum number of recent items to display in the activity log.
@@ -58,14 +58,14 @@ pub struct App {
     summary: Summary,
 
     // Scan stage
-    scanning_dir: Option<PathBuf>,
+    scanning_dir: Option<SourcePath>,
     scan_complete: bool,
 
     // Process stage
     files_with_exif: u64,
 
     // Copy stage
-    current_file: Option<(PathBuf, PathBuf, u64)>, // (src, dest, size)
+    current_file: Option<(SourcePath, DestPath, u64)>, // (src, dest, size)
     files_to_copy: u64,
 
     // Speed calculation (rolling window)
@@ -188,6 +188,12 @@ impl App {
                     Style::default().fg(Color::LightRed),
                 );
             }
+            ProgressMsg::UnknownCamera { model } => {
+                self.add_recent(
+                    format!("⊘ Unknown camera: {}", model),
+                    Style::default().fg(Color::Magenta),
+                );
+            }
             _ => {}
         }
     }
@@ -205,16 +211,29 @@ fn ui(frame: &mut Frame, app: &App) {
     frame.render_widget(block, area);
 
     // Layout: vertical chunks
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .margin(1)
-        .constraints([
+    let constraints = if app.done {
+        // Add footer when done
+        vec![
             Constraint::Length(2), // Scanning status
             Constraint::Length(3), // Current file
             Constraint::Length(2), // Progress bar
             Constraint::Length(2), // Speed/stats
             Constraint::Min(4),    // Recent items
-        ])
+            Constraint::Length(1), // Footer prompt
+        ]
+    } else {
+        vec![
+            Constraint::Length(2), // Scanning status
+            Constraint::Length(3), // Current file
+            Constraint::Length(2), // Progress bar
+            Constraint::Length(2), // Speed/stats
+            Constraint::Min(4),    // Recent items
+        ]
+    };
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .margin(1)
+        .constraints(constraints)
         .split(inner);
 
     // Scanning status
@@ -250,11 +269,18 @@ fn ui(frame: &mut Frame, app: &App) {
             dest.display()
         )
     } else if app.done {
-        "Done!".to_string()
+        "✓ Complete!".to_string()
     } else {
         "Waiting...".to_string()
     };
-    let current_para = Paragraph::new(current_text).style(Style::default().fg(Color::White));
+    let current_style = if app.done {
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    let current_para = Paragraph::new(current_text).style(current_style);
     frame.render_widget(current_para, chunks[1]);
 
     // Progress bar
@@ -298,6 +324,19 @@ fn ui(frame: &mut Frame, app: &App) {
             .border_style(Style::default().fg(Color::DarkGray)),
     );
     frame.render_widget(recent_list, chunks[4]);
+
+    // Footer prompt (only when done)
+    if app.done {
+        let prompt = Paragraph::new(" Press any key to exit ")
+            .style(
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )
+            .alignment(Alignment::Center);
+        frame.render_widget(prompt, chunks[5]);
+    }
 }
 
 /// Run the TUI, receiving progress messages until Done.
@@ -348,8 +387,14 @@ pub fn run_tui(rx: Receiver<ProgressMsg>) -> Result<()> {
             terminal
                 .draw(|f| ui(f, &app))
                 .context("Failed to draw final frame")?;
-            // Wait a moment so user can see completion
-            std::thread::sleep(Duration::from_secs(2));
+            // Wait for key press
+            loop {
+                if event::poll(Duration::from_millis(100)).context("Failed to poll events")?
+                    && let Event::Key(_) = event::read().context("Failed to read event")?
+                {
+                    break;
+                }
+            }
             break;
         }
     }

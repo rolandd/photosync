@@ -8,8 +8,9 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::path::PathBuf;
 use std::time::Duration;
+
+use crate::paths::{DestPath, SourcePath};
 
 /// Constants for byte size formatting.
 const BYTES_PER_KB: u64 = 1024;
@@ -20,20 +21,20 @@ const BYTES_PER_GB: u64 = 1024 * 1024 * 1024;
 #[derive(Debug, Clone)]
 pub enum ProgressMsg {
     // From file_walker
-    ScanningDir(PathBuf),
+    ScanningDir(SourcePath),
     FileFound,
     ScanComplete,
 
     // From file_processor
     ExifExtracted {
-        path: PathBuf,
+        path: SourcePath,
         model: String,
     },
 
     // From file_handler
     CopyStarted {
-        src: PathBuf,
-        dest: PathBuf,
+        src: SourcePath,
+        dest: DestPath,
         size: u64,
     },
     CopyComplete {
@@ -50,8 +51,8 @@ pub enum ProgressMsg {
     },
     /// File with same name exists at destination but has different contents.
     SuspiciousDuplicate {
-        src: PathBuf,
-        dest: PathBuf,
+        src: SourcePath,
+        dest: DestPath,
     },
     /// Camera model not found in configuration (when template needs {camera}).
     UnknownCamera {
@@ -100,7 +101,7 @@ pub struct Summary {
     pub bytes_copied: u64,
     pub total_duration: Duration,
     /// Files that matched by name but had different contents.
-    pub suspicious_duplicates: Vec<(PathBuf, PathBuf)>,
+    pub suspicious_duplicates: Vec<(SourcePath, DestPath)>,
     /// Camera models not found in configuration, with count of files skipped.
     pub unknown_cameras: HashMap<String, u32>,
 }
@@ -199,6 +200,9 @@ impl fmt::Display for Summary {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    use crate::paths::{DestPath, SourcePath};
 
     #[test]
     fn test_format_bytes_zero() {
@@ -293,12 +297,12 @@ mod tests {
             files_skipped: 3,
             suspicious_duplicates: vec![
                 (
-                    PathBuf::from("/src/IMG_001.jpg"),
-                    PathBuf::from("/dest/IMG_001.jpg"),
+                    SourcePath::new(PathBuf::from("/src/IMG_001.jpg")),
+                    DestPath::new(PathBuf::from("/dest/IMG_001.jpg")),
                 ),
                 (
-                    PathBuf::from("/src/IMG_002.jpg"),
-                    PathBuf::from("/dest/IMG_002.jpg"),
+                    SourcePath::new(PathBuf::from("/src/IMG_002.jpg")),
+                    DestPath::new(PathBuf::from("/dest/IMG_002.jpg")),
                 ),
             ],
             ..Default::default()
@@ -343,8 +347,8 @@ mod tests {
 
         // SuspiciousDuplicate adds to list
         assert!(!summary.update(&ProgressMsg::SuspiciousDuplicate {
-            src: PathBuf::from("/src/dup.jpg"),
-            dest: PathBuf::from("/dest/dup.jpg"),
+            src: SourcePath::new(PathBuf::from("/src/dup.jpg")),
+            dest: DestPath::new(PathBuf::from("/dest/dup.jpg")),
         }));
         assert_eq!(summary.suspicious_duplicates.len(), 1);
 

@@ -13,6 +13,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 
 mod config;
+mod paths;
 mod pipeline;
 mod progress;
 mod tui;
