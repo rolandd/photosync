@@ -41,6 +41,9 @@ dry run (`-n`) before usage.
 ### Windows
 - **Source:** You generally need to specify a drive letter (e.g.,
   `source = "D:/"`).
+- **Path Separators:** Always use **forward slashes** (`/`) in
+  configuration paths, even on Windows. For example, use `D:/Photos`
+  or `Canon/EOS/R6`, not `D:\Photos` or `Canon\EOS\R6`.
 - **Excludes:** Creating a config with `--init` on Windows will
   default to excluding common system folders like `System Volume
   Information` and `$RECYCLE.BIN`.
@@ -140,6 +143,9 @@ The following tags are available:
 The default template is `{camera}/{year}/{month}/{day}`.
 
 **Note on Safety:**
+- All paths and templates must use **forward slashes** (`/`), not
+  backslashes. They will be converted to the appropriate separator
+  for your platform.
 - Camera directory names defined in the config must be relative paths
   and cannot contain `..` (parent directory traversal).
 - The resulting path from the template is also validated to ensure it
