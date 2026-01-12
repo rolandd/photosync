@@ -7,7 +7,7 @@
 //! extracts EXIF metadata, and copies files to `~/Pictures/<camera_dir>/YYYY/MM/DD/`.
 
 use std::io::IsTerminal;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -16,66 +16,14 @@ mod config;
 mod paths;
 mod pipeline;
 mod progress;
+mod text_mode;
 mod tui;
 
 use config::{Args, config_path, generate_config_template, load_config};
-use progress::{ProgressMsg, Summary};
+use progress::ProgressMsg;
 
 /// Channel buffer size for the progress channel.
 const PROGRESS_BUFFER_SIZE: usize = 1024;
-
-/// Run the text-mode progress display.
-fn run_text_mode(rx: Receiver<ProgressMsg>) -> Summary {
-    let mut summary = Summary::default();
-
-    for msg in rx {
-        // Update summary statistics (returns true on Done)
-        if summary.update(&msg) {
-            break;
-        }
-
-        // Print progress (text-mode specific)
-        match &msg {
-            ProgressMsg::ScanningDir(path) => {
-                println!("Scanning: {}", path.display());
-            }
-            ProgressMsg::ScanComplete => {
-                println!("Scan complete.");
-            }
-            ProgressMsg::ExifExtracted { path, model } => {
-                println!("Found: {} ({})", path.display(), model);
-            }
-            ProgressMsg::CopyStarted { src, dest, .. } => {
-                println!("Copying: {} -> {}", src.display(), dest.display());
-            }
-            ProgressMsg::CopyComplete {
-                filename,
-                size,
-                duration,
-            } => {
-                let speed = progress::format_speed(*size, *duration);
-                let bytes = progress::format_bytes(*size);
-                println!("  Done: {filename} ({bytes}, {speed})");
-            }
-            ProgressMsg::CopySkipped { filename } => {
-                println!("  Skipped (exists): {filename}");
-            }
-            ProgressMsg::CopyError { filename, error } => {
-                eprintln!("  Error: {filename}: {error}");
-            }
-            ProgressMsg::ScanError { path, error } => {
-                eprintln!("  Scan Error: {}: {}", path.display(), error);
-            }
-            ProgressMsg::SuspiciousDuplicate { src, .. } => {
-                eprintln!("  WARNING: Suspicious duplicate: {}", src.display());
-            }
-            // UnknownCamera is tracked in summary, no need to log each instance
-            _ => {}
-        }
-    }
-
-    summary
-}
 
 /// Handle --init: create a starter config file.
 fn handle_init() -> Result<()> {
@@ -123,24 +71,26 @@ fn main() -> Result<()> {
     let dry_run = args.dry_run;
     let use_tui = std::io::stdout().is_terminal() && !args.no_tui;
 
-    eprintln!("Source: {}", source_dir.display());
-    eprintln!("Target: {}", target_dir.display());
-
-    // Create progress channel for TUI
+    // Create progress channel for UI
     // Note: if buffer is full, workers block.
     let (progress_tx, progress_rx) = mpsc::sync_channel::<ProgressMsg>(PROGRESS_BUFFER_SIZE);
+
+    if !use_tui {
+        eprintln!("Source: {}", source_dir.display());
+        eprintln!("Target: {}", target_dir.display());
+    }
 
     // Spawn the pipeline (walker, processor, handler, and monitor)
     let monitor_handle =
         pipeline::spawn_pipeline(source_dir, target_dir, config, dry_run, progress_tx);
 
     // Run TUI or text mode
-    if use_tui {
-        tui::run_tui(progress_rx).context("TUI error")?;
+    let summary = if use_tui {
+        tui::run_tui(progress_rx).context("TUI error")?
     } else {
-        let summary = run_text_mode(progress_rx);
-        println!("{summary}");
-    }
+        text_mode::run_text_mode(progress_rx)
+    };
+    println!("{summary}");
 
     // Wait for the monitor thread to finish (which implies all workers are done)
     monitor_handle.join().expect("Monitor thread panicked");

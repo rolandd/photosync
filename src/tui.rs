@@ -356,7 +356,7 @@ fn ui(frame: &mut Frame, app: &App) {
 }
 
 /// Run the TUI, receiving progress messages until Done.
-pub fn run_tui(rx: Receiver<ProgressMsg>) -> Result<()> {
+pub fn run_tui(rx: Receiver<ProgressMsg>) -> Result<Summary> {
     // Setup terminal
     enable_raw_mode().context("Failed to enable raw mode")?;
     stdout()
@@ -417,12 +417,10 @@ pub fn run_tui(rx: Receiver<ProgressMsg>) -> Result<()> {
         }
     }
 
-    // Print summary (terminal already restored by guard)
-    // Explicitly drop guard first to restore terminal before printing
+    // Explicitly drop guard to restore terminal before returning
     drop(_guard);
-    println!("{}", app.summary);
 
-    Ok(())
+    Ok(app.summary)
 }
 
 #[cfg(test)]
