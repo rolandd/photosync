@@ -12,8 +12,8 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use chrono::{NaiveDate, NaiveDateTime};
-use nom_exif::{Exif, ExifIter, ExifTag, MediaParser, MediaSource};
+use chrono::NaiveDate;
+use nom_exif::{EntryValue, Exif, ExifIter, ExifTag, MediaParser, MediaSource};
 use walkdir::WalkDir;
 
 use crate::config::Config;
@@ -237,24 +237,12 @@ fn file_processor(
 
         // Try to get date from EXIF.
         // nom-exif returns dates in different formats depending on the file type:
-        // - JPG files: Time (chrono DateTime<FixedOffset>) - use as_time()
-        // - CR3/RAW files: NaiveDateTime (no timezone) - need to use Display trait
-        // - Legacy formats: String - use as_str()
-        let date = exif.get(ExifTag::DateTimeOriginal).and_then(|v| {
-            // First try as a parsed Time value (chrono DateTime<FixedOffset>)
-            if let Some(dt) = v.as_time() {
-                return Some(dt.date_naive());
-            }
-            // Try as a string (some formats store as string)
-            if let Some(s) = v.as_str()
-                && let Some(d) = parse_exif_date(s)
-            {
-                return Some(d);
-            }
-            // Fall back to using Display trait for NaiveDateTime values
-            // The Display format produces "YYYY-MM-DD HH:MM:SS" for NaiveDateTime
-            let display_str = v.to_string();
-            parse_exif_date(&display_str)
+        // - With timezone: EntryValue::Time (chrono DateTime<FixedOffset>)
+        // - Without timezone: EntryValue::NaiveDateTime
+        let date = exif.get(ExifTag::DateTimeOriginal).and_then(|v| match v {
+            EntryValue::Time(dt) => Some(dt.date_naive()),
+            EntryValue::NaiveDateTime(dt) => Some(dt.date()),
+            _ => None,
         });
 
         if let (Some(model), Some(date)) = (model, date) {
@@ -275,57 +263,6 @@ fn file_processor(
             }
         }
     }
-}
-
-/// Parses an EXIF date string into a `NaiveDate`.
-fn parse_exif_date(s: &str) -> Option<NaiveDate> {
-    let clean_s = s.trim();
-
-    // Define formats to try
-    let formats = [
-        "%Y:%m:%d %H:%M:%S",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y/%m/%d %H:%M:%S",
-        // Date only formats
-        "%Y:%m:%d",
-        "%Y-%m-%d",
-        "%Y/%m/%d",
-    ];
-
-    for fmt in formats {
-        if let Ok(dt) = NaiveDateTime::parse_from_str(clean_s, fmt) {
-            return Some(dt.date());
-        }
-        if let Ok(dt) = NaiveDate::parse_from_str(clean_s, fmt) {
-            return Some(dt);
-        }
-    }
-
-    // Fallback parsing for weird separators
-    if s.len() >= 10 {
-        let date_part = &s[..10];
-        let normalized = date_part.replace([':', '-'], "/");
-
-        if normalized.chars().filter(|c| *c == '/').count() == 2
-            && normalized.chars().all(|c| c.is_ascii_digit() || c == '/')
-        {
-            let parts: Vec<&str> = normalized.split('/').collect();
-            if parts.len() == 3
-                && let (Ok(y), Ok(m), Ok(d)) = (
-                    parts[0].parse::<i32>(),
-                    parts[1].parse::<u32>(),
-                    parts[2].parse::<u32>(),
-                )
-                && let Some(date) = NaiveDate::from_ymd_opt(y, m, d)
-            {
-                #[cfg(debug_assertions)]
-                eprintln!("Debug: Fallback date parsing used for: {s}");
-                return Some(date);
-            }
-        }
-    }
-
-    None
 }
 
 /// Result of computing a destination directory.
@@ -427,56 +364,6 @@ mod tests {
             .write_all(content)
             .unwrap();
         path
-    }
-
-    #[test]
-    fn test_parse_exif_date_standard() {
-        assert_eq!(
-            parse_exif_date("2023:10:25 14:30:00"),
-            Some(NaiveDate::from_ymd_opt(2023, 10, 25).unwrap())
-        );
-    }
-
-    #[test]
-    fn test_parse_exif_date_dashes() {
-        assert_eq!(
-            parse_exif_date("2023-10-25 14:30:00"),
-            Some(NaiveDate::from_ymd_opt(2023, 10, 25).unwrap())
-        );
-    }
-
-    #[test]
-    fn test_parse_exif_date_slashes() {
-        assert_eq!(
-            parse_exif_date("2023/10/25 14:30:00"),
-            Some(NaiveDate::from_ymd_opt(2023, 10, 25).unwrap())
-        );
-    }
-
-    #[test]
-    fn test_parse_exif_date_date_only() {
-        assert_eq!(
-            parse_exif_date("2023:10:25"),
-            Some(NaiveDate::from_ymd_opt(2023, 10, 25).unwrap())
-        );
-        assert_eq!(
-            parse_exif_date("2023-10-25"),
-            Some(NaiveDate::from_ymd_opt(2023, 10, 25).unwrap())
-        );
-    }
-
-    #[test]
-    fn test_parse_exif_date_fallback() {
-        assert_eq!(
-            parse_exif_date("2023:10:25 random garbage"),
-            Some(NaiveDate::from_ymd_opt(2023, 10, 25).unwrap())
-        );
-    }
-
-    #[test]
-    fn test_parse_exif_date_invalid() {
-        assert_eq!(parse_exif_date("not a date"), None);
-        assert_eq!(parse_exif_date("0000:00:00 00:00:00"), None);
     }
 
     #[test]
@@ -609,19 +496,6 @@ mod tests {
             panic!("Expected DestDirResult::Ok");
         };
         assert_eq!(dest, target.join("2023").join("10").join("25"));
-    }
-
-    #[test]
-    fn test_parse_exif_date_with_whitespace() {
-        // Leading/trailing whitespace should be trimmed
-        assert_eq!(
-            parse_exif_date("  2023:10:25 14:30:00  "),
-            Some(NaiveDate::from_ymd_opt(2023, 10, 25).unwrap())
-        );
-        assert_eq!(
-            parse_exif_date("\n2023:10:25\t"),
-            Some(NaiveDate::from_ymd_opt(2023, 10, 25).unwrap())
-        );
     }
 
     #[test]
