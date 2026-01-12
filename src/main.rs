@@ -18,7 +18,7 @@ mod pipeline;
 mod progress;
 mod tui;
 
-use config::{Args, config_path, generate_config_template, load_config, validate_template};
+use config::{Args, config_path, generate_config_template, load_config};
 use progress::{ProgressMsg, Summary};
 
 /// Channel buffer size for the progress channel.
@@ -115,12 +115,8 @@ fn main() -> Result<()> {
 
     let mut config = load_config()?;
 
-    // Validate and set CLI template override (uses same validation as config file)
-    if let Some(t) = args.template {
-        config.dest_template = validate_template(t);
-    }
-
-    // Determine paths
+    // Apply CLI overrides using unified Config methods
+    config.effective_template(args.template);
     let source_dir = config.source_dir(args.source.as_ref())?;
     let target_dir = config.target_dir(args.target.as_ref())?;
 

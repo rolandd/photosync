@@ -329,6 +329,14 @@ impl Config {
         })
     }
 
+    /// Resolve the effective destination template.
+    /// Priority: CLI arg > Config file (no default - None means use built-in behavior)
+    pub fn effective_template(&mut self, cli_override: Option<String>) {
+        if let Some(t) = cli_override.and_then(validate_template) {
+            self.dest_template = Some(t);
+        }
+    }
+
     /// Helper: resolve a directory with CLI > config > default priority.
     fn resolve_dir(
         cli_override: Option<&PathBuf>,
