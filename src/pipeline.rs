@@ -235,10 +235,27 @@ fn file_processor(
             .and_then(|v| v.as_str())
             .map(ToString::to_string);
 
-        let date = exif
-            .get(ExifTag::DateTimeOriginal)
-            .and_then(|v| v.as_str())
-            .and_then(parse_exif_date);
+        // Try to get date from EXIF.
+        // nom-exif returns dates in different formats depending on the file type:
+        // - JPG files: Time (chrono DateTime<FixedOffset>) - use as_time()
+        // - CR3/RAW files: NaiveDateTime (no timezone) - need to use Display trait
+        // - Legacy formats: String - use as_str()
+        let date = exif.get(ExifTag::DateTimeOriginal).and_then(|v| {
+            // First try as a parsed Time value (chrono DateTime<FixedOffset>)
+            if let Some(dt) = v.as_time() {
+                return Some(dt.date_naive());
+            }
+            // Try as a string (some formats store as string)
+            if let Some(s) = v.as_str()
+                && let Some(d) = parse_exif_date(s)
+            {
+                return Some(d);
+            }
+            // Fall back to using Display trait for NaiveDateTime values
+            // The Display format produces "YYYY-MM-DD HH:MM:SS" for NaiveDateTime
+            let display_str = v.to_string();
+            parse_exif_date(&display_str)
+        });
 
         if let (Some(model), Some(date)) = (model, date) {
             send_progress(
