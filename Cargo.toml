@@ -13,7 +13,7 @@ categories = ["command-line-utilities", "filesystem"]
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.5.54", features = ["derive"] }
-nom-exif = "2.5.4"
+nom-exif = "2.6.0"
 serde = { version = "1.0.228", features = ["derive"] }
 toml = "0.9.10"
 walkdir = "2"
