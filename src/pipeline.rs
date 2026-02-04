@@ -6,7 +6,7 @@
 //! 3. **Handler**: Copies files to destination with deduplication
 
 use std::fs::{self, File};
-use std::io::{self, BufReader, Read};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
@@ -128,33 +128,66 @@ fn report_error(
 /// Chunk size for file comparison (128 KB).
 const FILE_COMPARE_CHUNK_SIZE: usize = 128 * 1024;
 
-/// Compare two files for equality.
-fn files_are_equal(path1: &Path, path2: &Path) -> io::Result<bool> {
-    // Fast path: compare sizes first
-    let meta1 = fs::metadata(path1)?;
-    let meta2 = fs::metadata(path2)?;
-    if meta1.len() != meta2.len() {
-        return Ok(false);
+/// Helper struct to compare files reusing internal buffers.
+struct FileComparator {
+    buf1: Vec<u8>,
+    buf2: Vec<u8>,
+}
+
+impl FileComparator {
+    fn new() -> Self {
+        Self {
+            buf1: Vec::new(),
+            buf2: Vec::new(),
+        }
     }
 
-    // Chunked byte comparison
-    let mut reader1 = BufReader::with_capacity(FILE_COMPARE_CHUNK_SIZE, File::open(path1)?);
-    let mut reader2 = BufReader::with_capacity(FILE_COMPARE_CHUNK_SIZE, File::open(path2)?);
-
-    let mut buf1 = vec![0u8; FILE_COMPARE_CHUNK_SIZE];
-    let mut buf2 = vec![0u8; FILE_COMPARE_CHUNK_SIZE];
-
-    loop {
-        let n1 = reader1.read(&mut buf1)?;
-        let n2 = reader2.read(&mut buf2)?;
-
-        if n1 != n2 || buf1[..n1] != buf2[..n2] {
+    /// Compare two files for equality.
+    fn compare(&mut self, path1: &Path, path2: &Path) -> io::Result<bool> {
+        // Fast path: compare sizes first
+        let meta1 = fs::metadata(path1)?;
+        let meta2 = fs::metadata(path2)?;
+        if meta1.len() != meta2.len() {
             return Ok(false);
         }
 
-        if n1 == 0 {
-            return Ok(true);
+        // Ensure buffers are the correct size
+        if self.buf1.len() != FILE_COMPARE_CHUNK_SIZE {
+            self.buf1.resize(FILE_COMPARE_CHUNK_SIZE, 0);
         }
+        if self.buf2.len() != FILE_COMPARE_CHUNK_SIZE {
+            self.buf2.resize(FILE_COMPARE_CHUNK_SIZE, 0);
+        }
+
+        // Chunked byte comparison
+        let mut file1 = File::open(path1)?;
+        let mut file2 = File::open(path2)?;
+
+        loop {
+            let n1 = Self::read_chunk(&mut file1, &mut self.buf1)?;
+            let n2 = Self::read_chunk(&mut file2, &mut self.buf2)?;
+
+            if n1 != n2 || self.buf1[..n1] != self.buf2[..n2] {
+                return Ok(false);
+            }
+
+            if n1 == 0 {
+                return Ok(true);
+            }
+        }
+    }
+
+    /// Helper to read a chunk from a file until buffer is full or EOF.
+    fn read_chunk(reader: &mut File, buf: &mut [u8]) -> io::Result<usize> {
+        let mut read = 0;
+        while read < buf.len() {
+            let n = reader.read(&mut buf[read..])?;
+            if n == 0 {
+                break;
+            }
+            read += n;
+        }
+        Ok(read)
     }
 }
 
@@ -372,7 +405,8 @@ mod tests {
         let file1 = create_test_file(dir.path(), "file1.txt", b"Hello, world!");
         let file2 = create_test_file(dir.path(), "file2.txt", b"Hello, world!");
 
-        assert!(files_are_equal(&file1, &file2).unwrap());
+        let mut comparator = FileComparator::new();
+        assert!(comparator.compare(&file1, &file2).unwrap());
     }
 
     #[test]
@@ -381,7 +415,8 @@ mod tests {
         let file1 = create_test_file(dir.path(), "file1.txt", b"short");
         let file2 = create_test_file(dir.path(), "file2.txt", b"much longer content");
 
-        assert!(!files_are_equal(&file1, &file2).unwrap());
+        let mut comparator = FileComparator::new();
+        assert!(!comparator.compare(&file1, &file2).unwrap());
     }
 
     #[test]
@@ -390,7 +425,8 @@ mod tests {
         let file1 = create_test_file(dir.path(), "file1.txt", b"AAAA");
         let file2 = create_test_file(dir.path(), "file2.txt", b"BBBB");
 
-        assert!(!files_are_equal(&file1, &file2).unwrap());
+        let mut comparator = FileComparator::new();
+        assert!(!comparator.compare(&file1, &file2).unwrap());
     }
 
     #[test]
@@ -399,7 +435,8 @@ mod tests {
         let file1 = create_test_file(dir.path(), "exists.txt", b"");
         let file2 = dir.path().join("missing.txt");
 
-        assert!(files_are_equal(&file1, &file2).is_err());
+        let mut comparator = FileComparator::new();
+        assert!(comparator.compare(&file1, &file2).is_err());
     }
 
     #[test]
@@ -507,14 +544,15 @@ mod tests {
         let file1 = create_test_file(dir.path(), "large1.bin", &large_content);
         let file2 = create_test_file(dir.path(), "large2.bin", &large_content);
 
-        assert!(files_are_equal(&file1, &file2).unwrap());
+        let mut comparator = FileComparator::new();
+        assert!(comparator.compare(&file1, &file2).unwrap());
 
         // Create a file that differs only in the second chunk
         let mut different_content = large_content.clone();
         different_content[150_000] = 0xFF; // Modify byte in second chunk
         let file3 = create_test_file(dir.path(), "large3.bin", &different_content);
 
-        assert!(!files_are_equal(&file1, &file3).unwrap());
+        assert!(!comparator.compare(&file1, &file3).unwrap());
     }
 
     #[test]
@@ -605,6 +643,8 @@ fn file_handler(
     dry_run: bool,
     progress_tx: SyncSender<ProgressMsg>,
 ) {
+    let mut comparator = FileComparator::new();
+
     for info in rx {
         let dest_dir = match compute_dest_dir(&target_dir, &config, &info.model, info.date) {
             DestDirResult::Ok(path) => path,
@@ -636,15 +676,17 @@ fn file_handler(
 
         if dest_path.exists() {
             // Check if contents are the same
-            let is_same = files_are_equal(&info.path, &dest_path).unwrap_or_else(|e| {
-                // Log error and assume different (safer)
-                report_error(
-                    &progress_tx,
-                    filename_str.clone(),
-                    format!("Error comparing files: {e}"),
-                );
-                false
-            });
+            let is_same = comparator
+                .compare(&info.path, &dest_path)
+                .unwrap_or_else(|e| {
+                    // Log error and assume different (safer)
+                    report_error(
+                        &progress_tx,
+                        filename_str.clone(),
+                        format!("Error comparing files: {e}"),
+                    );
+                    false
+                });
 
             if !is_same {
                 // Suspicious: same name but different contents
