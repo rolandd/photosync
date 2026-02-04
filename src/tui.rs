@@ -300,15 +300,15 @@ fn ui(frame: &mut Frame, app: &App) {
     frame.render_widget(current_para, chunks[1]);
 
     // Progress bar
-    let total = app.files_to_copy.max(1);
-    let progress_ratio = app.summary.files_copied as f64 / total as f64;
+    let processed = app.summary.total_processed();
+    let total = app.files_with_exif.max(1);
+    let progress_ratio = processed as f64 / total as f64;
+    let percentage = (progress_ratio * 100.0).min(100.0);
+
     let gauge = Gauge::default()
         .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
         .ratio(progress_ratio.min(1.0))
-        .label(format!(
-            "{} / {}",
-            app.summary.files_copied, app.files_to_copy
-        ));
+        .label(format!("{} / {} ({:.0}%)", processed, total, percentage));
     frame.render_widget(gauge, chunks[2]);
 
     // Speed and stats

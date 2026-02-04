@@ -112,6 +112,18 @@ pub struct Summary {
 }
 
 impl Summary {
+    /// Returns the total number of files processed (copied, skipped, or errored).
+    pub fn total_processed(&self) -> u64 {
+        self.files_copied
+            + self.files_skipped
+            + self.files_errored
+            + self
+                .unknown_cameras
+                .values()
+                .map(|&c| c as u64)
+                .sum::<u64>()
+    }
+
     /// Update summary statistics from a progress message.
     ///
     /// Returns `true` if this was a `Done` message, `false` otherwise.
@@ -320,6 +332,19 @@ mod tests {
         assert!(output.contains("/src/IMG_001.jpg"));
         assert!(output.contains("/dest/IMG_001.jpg"));
         assert!(output.contains("/src/IMG_002.jpg"));
+    }
+
+    #[test]
+    fn test_summary_total_processed() {
+        let mut summary = Summary::default();
+        summary.files_copied = 10;
+        summary.files_skipped = 5;
+        summary.files_errored = 2;
+        summary.unknown_cameras.insert("ModelA".to_string(), 3);
+        summary.unknown_cameras.insert("ModelB".to_string(), 1);
+
+        // 10 + 5 + 2 + 3 + 1 = 21
+        assert_eq!(summary.total_processed(), 21);
     }
 
     #[test]
