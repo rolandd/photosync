@@ -6,7 +6,7 @@
 //! 3. **Handler**: Copies files to destination with deduplication
 
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
@@ -125,48 +125,23 @@ fn report_error(
     );
 }
 
-/// Buffer size for file copying (128 KB).
-const COPY_BUFFER_SIZE: usize = 128 * 1024;
+/// Copies a file to a destination, failing if the destination already exists.
+/// This prevents TOCTOU races where a symlink is created at the destination
+/// between the existence check and the copy.
+fn atomic_copy(src: &Path, dest: &Path) -> io::Result<u64> {
+    let mut reader = File::open(src)?;
+    let mut writer = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dest)?;
+    let len = io::copy(&mut reader, &mut writer)?;
 
-/// Helper struct to copy files reusing internal buffers.
-struct FileCopier {
-    buf: Vec<u8>,
-}
-
-impl FileCopier {
-    fn new() -> Self {
-        Self {
-            buf: vec![0u8; COPY_BUFFER_SIZE],
-        }
+    // Attempt to copy permissions (best effort)
+    if let Ok(meta) = fs::metadata(src) {
+        let _ = writer.set_permissions(meta.permissions());
     }
 
-    /// Copies a file to a destination, failing if the destination already exists.
-    fn copy(&mut self, src: &Path, dest: &Path) -> io::Result<u64> {
-        let mut reader = File::open(src)?;
-        let mut writer = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(dest)?;
-
-        let mut written = 0;
-        loop {
-            let n = match reader.read(&mut self.buf) {
-                Ok(0) => break,
-                Ok(n) => n,
-                Err(ref e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                Err(e) => return Err(e),
-            };
-            writer.write_all(&self.buf[..n])?;
-            written += n as u64;
-        }
-
-        // Attempt to copy permissions (best effort)
-        if let Ok(meta) = fs::metadata(src) {
-            let _ = writer.set_permissions(meta.permissions());
-        }
-
-        Ok(written)
-    }
+    Ok(len)
 }
 
 /// Chunk size for file comparison (128 KB).
@@ -668,7 +643,6 @@ fn file_handler(
     progress_tx: SyncSender<ProgressMsg>,
 ) {
     let mut comparator = FileComparator::new();
-    let mut copier = FileCopier::new();
 
     for info in rx {
         let dest_dir = match compute_dest_dir(&target_dir, &config, &info.model, info.date) {
@@ -774,7 +748,7 @@ fn file_handler(
         );
 
         let start = Instant::now();
-        if let Err(e) = copier.copy(&info.path, &dest_path) {
+        if let Err(e) = atomic_copy(&info.path, &dest_path) {
             report_error(&progress_tx, filename_str, format!("Copy failed: {e}"));
             continue;
         }
