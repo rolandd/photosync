@@ -657,10 +657,12 @@ fn atomic_copy(src: &Path, dest: &Path) -> io::Result<u64> {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
+            // Execute bits for user, group, and others (equivalent to S_IXUSR | S_IXGRP | S_IXOTH)
+            const S_IXUGO: u32 = 0o111;
             let mode = perms.mode();
-            // Mask out execute bits (111 in octal) to prevent accidental
+            // Mask out execute bits to prevent accidental
             // propagation of executable permissions (e.g. from FAT filesystems)
-            perms.set_mode(mode & !0o111);
+            perms.set_mode(mode & !S_IXUGO);
         }
         let _ = writer.set_permissions(perms);
     }
