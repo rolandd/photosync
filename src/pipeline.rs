@@ -577,6 +577,25 @@ mod tests {
     }
 }
 
+/// Copies a file to a destination, failing if the destination already exists.
+/// This prevents TOCTOU races where a symlink is created at the destination
+/// between the existence check and the copy.
+fn atomic_copy(src: &Path, dest: &Path) -> io::Result<u64> {
+    let mut reader = File::open(src)?;
+    let mut writer = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dest)?;
+    let len = io::copy(&mut reader, &mut writer)?;
+
+    // Attempt to copy permissions (best effort)
+    if let Ok(meta) = fs::metadata(src) {
+        let _ = writer.set_permissions(meta.permissions());
+    }
+
+    Ok(len)
+}
+
 /// Final handler for files with complete metadata.
 /// Copies files to `target_dir/<camera_dir>/YYYY/MM/DD/`
 fn file_handler(
@@ -688,7 +707,7 @@ fn file_handler(
         );
 
         let start = Instant::now();
-        if let Err(e) = fs::copy(&info.path, &dest_path) {
+        if let Err(e) = atomic_copy(&info.path, &dest_path) {
             report_error(&progress_tx, filename_str, format!("Copy failed: {e}"));
             continue;
         }
