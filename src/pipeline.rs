@@ -612,6 +612,32 @@ mod tests {
         assert!(paths[0].to_string_lossy().contains("good.jpg"));
         assert!(!paths[0].to_string_lossy().contains("ignore"));
     }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_atomic_copy_strips_execute_bit() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("executable.bin");
+        let dest = dir.path().join("sanitized.bin");
+
+        // Create executable source file
+        {
+            let mut file = File::create(&src).unwrap();
+            file.write_all(b"data").unwrap();
+            let mut perms = file.metadata().unwrap().permissions();
+            perms.set_mode(0o755); // rwxr-xr-x
+            file.set_permissions(perms).unwrap();
+        }
+
+        // Run atomic_copy
+        atomic_copy(&src, &dest).unwrap();
+
+        // Check destination permissions
+        let dest_perms = fs::metadata(&dest).unwrap().permissions();
+        // Should be 0o644 (rw-r--r--) because 755 & !111 = 644
+        assert_eq!(dest_perms.mode() & 0o777, 0o644);
+    }
 }
 
 /// Copies a file to a destination, failing if the destination already exists.
@@ -627,7 +653,16 @@ fn atomic_copy(src: &Path, dest: &Path) -> io::Result<u64> {
 
     // Attempt to copy permissions (best effort)
     if let Ok(meta) = fs::metadata(src) {
-        let _ = writer.set_permissions(meta.permissions());
+        let mut perms = meta.permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = perms.mode();
+            // Mask out execute bits (111 in octal) to prevent accidental
+            // propagation of executable permissions (e.g. from FAT filesystems)
+            perms.set_mode(mode & !0o111);
+        }
+        let _ = writer.set_permissions(perms);
     }
 
     Ok(len)
