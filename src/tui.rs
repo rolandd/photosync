@@ -219,10 +219,19 @@ fn ui(frame: &mut Frame, app: &App) {
     let area = frame.area();
 
     // Outer block
-    let block = Block::default()
+    let mut block = Block::default()
         .title(" Photosync ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
+
+    if !app.done {
+        block = block.title_bottom(
+            Line::from(" Press 'q' to quit ")
+                .style(Style::default().fg(Color::DarkGray))
+                .right_aligned(),
+        );
+    }
+
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
