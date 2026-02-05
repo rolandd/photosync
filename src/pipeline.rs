@@ -192,7 +192,6 @@ impl FileComparator {
 }
 
 /// Discovers all files under source directories.
-/// Discovers all files under source directories.
 fn file_walker(
     source_dir: PathBuf,
     exclude_dirs: Vec<String>,
