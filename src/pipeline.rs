@@ -6,7 +6,7 @@
 //! 3. **Handler**: Copies files to destination with deduplication
 
 use std::fs::{self, File};
-use std::io::{self, Read};
+use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
@@ -612,22 +612,56 @@ mod tests {
         assert!(paths[0].to_string_lossy().contains("good.jpg"));
         assert!(!paths[0].to_string_lossy().contains("ignore"));
     }
+
+    #[test]
+    fn test_atomic_copy_integrity() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("src_file.bin");
+        let dest = dir.path().join("dest_file.bin");
+
+        // Create a random file slightly larger than the buffer to test chunking
+        let size = FILE_COMPARE_CHUNK_SIZE + 1024;
+        let content: Vec<u8> = (0..size).map(|i| (i % 256) as u8).collect();
+        {
+            let mut f = File::create(&src).unwrap();
+            f.write_all(&content).unwrap();
+        }
+
+        // Copy
+        atomic_copy(&src, &dest).unwrap();
+
+        // Verify
+        let mut dest_content = Vec::new();
+        File::open(&dest)
+            .unwrap()
+            .read_to_end(&mut dest_content)
+            .unwrap();
+        assert_eq!(content, dest_content);
+    }
 }
 
 /// Copies a file to a destination, failing if the destination already exists.
 /// This prevents TOCTOU races where a symlink is created at the destination
 /// between the existence check and the copy.
 fn atomic_copy(src: &Path, dest: &Path) -> io::Result<u64> {
-    let mut reader = File::open(src)?;
-    let mut writer = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(dest)?;
+    let mut reader = BufReader::with_capacity(FILE_COMPARE_CHUNK_SIZE, File::open(src)?);
+    let mut writer = BufWriter::with_capacity(
+        FILE_COMPARE_CHUNK_SIZE,
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dest)?,
+    );
     let len = io::copy(&mut reader, &mut writer)?;
 
-    // Attempt to copy permissions (best effort)
+    // Ensure all data is written to disk before closing (or extracting inner)
+    writer.flush()?;
+
+    // Attempt to copy permissions (best effort).
+    // We must extract the underlying file to access set_permissions.
+    let inner_writer = writer.into_inner().map_err(io::Error::other)?;
     if let Ok(meta) = fs::metadata(src) {
-        let _ = writer.set_permissions(meta.permissions());
+        let _ = inner_writer.set_permissions(meta.permissions());
     }
 
     Ok(len)
