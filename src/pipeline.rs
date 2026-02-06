@@ -612,6 +612,32 @@ mod tests {
         assert!(paths[0].to_string_lossy().contains("good.jpg"));
         assert!(!paths[0].to_string_lossy().contains("ignore"));
     }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_atomic_copy_does_not_preserve_unsafe_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let src = create_test_file(dir.path(), "src.txt", b"content");
+        let dest = dir.path().join("dest.txt");
+
+        // Set source to 0o777 (rwxrwxrwx)
+        let mut perms = fs::metadata(&src).unwrap().permissions();
+        perms.set_mode(0o777);
+        fs::set_permissions(&src, perms).unwrap();
+
+        atomic_copy(&src, &dest).unwrap();
+
+        let dest_perms = fs::metadata(&dest).unwrap().permissions();
+        // Verify that we did NOT copy the executable bits.
+        // Files created with File::create (which calls open with O_CREAT) usually get 0666 & ~umask.
+        // They should definitely not be executable.
+        assert_eq!(
+            dest_perms.mode() & 0o111,
+            0,
+            "Destination file should not be executable"
+        );
+    }
 }
 
 /// Copies a file to a destination, failing if the destination already exists.
@@ -625,10 +651,10 @@ fn atomic_copy(src: &Path, dest: &Path) -> io::Result<u64> {
         .open(dest)?;
     let len = io::copy(&mut reader, &mut writer)?;
 
-    // Attempt to copy permissions (best effort)
-    if let Ok(meta) = fs::metadata(src) {
-        let _ = writer.set_permissions(meta.permissions());
-    }
+    // Security: Do NOT copy permissions from source.
+    // Source files (e.g. from SD cards) often have permissive permissions (777),
+    // and copying them can make destination files world-writable or executable.
+    // We rely on standard file creation behavior (umask) to set safe defaults (usually 644).
 
     Ok(len)
 }
