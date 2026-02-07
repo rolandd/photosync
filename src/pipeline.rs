@@ -660,7 +660,7 @@ fn atomic_copy(src: &Path, dest: &Path) -> io::Result<u64> {
             // Execute bits for user, group, and others (equivalent to S_IXUSR | S_IXGRP | S_IXOTH)
             const S_IXUGO: u32 = 0o111;
             let mode = perms.mode();
-            // Mask out execute bits to prevent accidental
+            // Mask out execute bits (S_IXUGO) to prevent accidental
             // propagation of executable permissions (e.g. from FAT filesystems)
             perms.set_mode(mode & !S_IXUGO);
         }
