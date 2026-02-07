@@ -31,6 +31,9 @@ use crate::progress::{self, ProgressMsg, Summary};
 /// Number of recent copy operations used for speed calculation.
 const SPEED_WINDOW_SIZE: usize = 10;
 
+/// Spinner frames for scanning animation
+const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
 /// Item in the recent activity log.
 #[derive(Clone)]
 struct RecentItem {
@@ -78,6 +81,7 @@ pub struct App {
 
     // State
     done: bool,
+    spinner_idx: usize,
 }
 
 impl App {
@@ -94,6 +98,7 @@ impl App {
             recent_items: VecDeque::with_capacity(size),
             max_recent_items: size,
             done: false,
+            spinner_idx: 0,
         }
     }
 }
@@ -105,6 +110,10 @@ impl Default for App {
 }
 
 impl App {
+    fn tick(&mut self) {
+        self.spinner_idx = (self.spinner_idx + 1) % SPINNER_FRAMES.len();
+    }
+
     fn add_recent(&mut self, text: String, style: Style) {
         if self.recent_items.len() >= self.max_recent_items {
             self.recent_items.pop_back();
@@ -274,8 +283,8 @@ fn ui(frame: &mut Frame, app: &App) {
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "...".to_string());
         format!(
-            "Scanning: {}  Files: {}  EXIF: {}",
-            dir, app.summary.files_found, app.files_with_exif
+            "{} Scanning: {}  Files: {}  EXIF: {}",
+            SPINNER_FRAMES[app.spinner_idx], dir, app.summary.files_found, app.files_with_exif
         )
     };
     let scan_para = Paragraph::new(scan_text).style(Style::default().fg(Color::White));
@@ -402,6 +411,7 @@ pub fn run_tui(rx: Receiver<ProgressMsg>) -> Result<Summary> {
 
         // Redraw at tick rate
         if last_draw.elapsed() >= tick_rate {
+            app.tick();
             terminal
                 .draw(|f| ui(f, &app))
                 .context("Failed to draw frame")?;
@@ -548,5 +558,20 @@ mod tests {
         }
 
         assert!(row_text.contains("Press 'q' to quit"));
+    }
+
+    #[test]
+    fn test_tick() {
+        let mut app = App::default();
+        assert_eq!(app.spinner_idx, 0);
+
+        app.tick();
+        assert_eq!(app.spinner_idx, 1);
+
+        // Advance to the end
+        for _ in 1..SPINNER_FRAMES.len() {
+            app.tick();
+        }
+        assert_eq!(app.spinner_idx, 0);
     }
 }
