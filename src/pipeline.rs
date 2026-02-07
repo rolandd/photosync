@@ -615,18 +615,18 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn test_atomic_copy_strips_execute_bit() {
+    fn test_atomic_copy_uses_default_permissions() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
-        let src = dir.path().join("executable.bin");
-        let dest = dir.path().join("sanitized.bin");
+        let src = dir.path().join("source.bin");
+        let dest = dir.path().join("dest.bin");
 
         // Create executable source file
         {
             let mut file = File::create(&src).unwrap();
             file.write_all(b"data").unwrap();
             let mut perms = file.metadata().unwrap().permissions();
-            perms.set_mode(0o755); // rwxr-xr-x
+            perms.set_mode(0o777); // rwxrwxrwx
             file.set_permissions(perms).unwrap();
         }
 
@@ -635,8 +635,18 @@ mod tests {
 
         // Check destination permissions
         let dest_perms = fs::metadata(&dest).unwrap().permissions();
-        // Should be 0o644 (rw-r--r--) because 755 & !111 = 644
-        assert_eq!(dest_perms.mode() & 0o777, 0o644);
+        let mode = dest_perms.mode() & 0o777;
+
+        // Verify that we didn't copy 777 permissions
+        assert_ne!(mode, 0o777);
+        // Verify no execute bits (assuming standard umask isn't 000)
+        assert_eq!(mode & 0o111, 0, "Destination file should not be executable");
+        // Verify standard read/write permissions for owner (rw-------)
+        assert_eq!(
+            mode & 0o600,
+            0o600,
+            "Owner should have read/write permissions"
+        );
     }
 }
 
@@ -651,21 +661,10 @@ fn atomic_copy(src: &Path, dest: &Path) -> io::Result<u64> {
         .open(dest)?;
     let len = io::copy(&mut reader, &mut writer)?;
 
-    // Attempt to copy permissions (best effort)
-    if let Ok(meta) = fs::metadata(src) {
-        let mut perms = meta.permissions();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            // Execute bits for user, group, and others (equivalent to S_IXUSR | S_IXGRP | S_IXOTH)
-            const S_IXUGO: u32 = 0o111;
-            let mode = perms.mode();
-            // Mask out execute bits (S_IXUGO) to prevent accidental
-            // propagation of executable permissions (e.g. from FAT filesystems)
-            perms.set_mode(mode & !S_IXUGO);
-        }
-        let _ = writer.set_permissions(perms);
-    }
+    // Note: We do NOT copy permissions from the source file.
+    // For photos/archives, it's safer to rely on the user's umask and default file creation
+    // permissions (typically 0644 or 0600) rather than trusting metadata from the source
+    // filesystem (e.g. FAT/exFAT often reports 0777/0755).
 
     Ok(len)
 }
