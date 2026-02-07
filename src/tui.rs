@@ -219,10 +219,19 @@ fn ui(frame: &mut Frame, app: &App) {
     let area = frame.area();
 
     // Outer block
-    let block = Block::default()
+    let mut block = Block::default()
         .title(" Photosync ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
+
+    if !app.done {
+        block = block.title_bottom(
+            Line::from(" Press 'q' to quit ")
+                .alignment(Alignment::Right)
+                .style(Style::default().fg(Color::DarkGray)),
+        );
+    }
+
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -426,6 +435,7 @@ pub fn run_tui(rx: Receiver<ProgressMsg>) -> Result<Summary> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::backend::TestBackend;
 
     #[test]
     fn test_app_default() {
@@ -519,5 +529,24 @@ mod tests {
                 .text
                 .contains("already exists")
         );
+    }
+
+    #[test]
+    fn test_ui_quit_hint() {
+        let app = App::default();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|f| ui(f, &app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        // Check that the quit hint is present in the buffer at the bottom row (index 23)
+        let y = 23;
+        let mut row_text = String::new();
+        for x in 0..80 {
+            row_text.push_str(buffer[(x, y)].symbol());
+        }
+
+        assert!(row_text.contains("Press 'q' to quit"));
     }
 }
