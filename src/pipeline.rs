@@ -612,6 +612,42 @@ mod tests {
         assert!(paths[0].to_string_lossy().contains("good.jpg"));
         assert!(!paths[0].to_string_lossy().contains("ignore"));
     }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_atomic_copy_uses_default_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("source.bin");
+        let dest = dir.path().join("dest.bin");
+
+        // Create executable source file
+        {
+            let mut file = File::create(&src).unwrap();
+            file.write_all(b"data").unwrap();
+            let mut perms = file.metadata().unwrap().permissions();
+            perms.set_mode(0o777); // rwxrwxrwx
+            file.set_permissions(perms).unwrap();
+        }
+
+        // Run atomic_copy
+        atomic_copy(&src, &dest).unwrap();
+
+        // Check destination permissions
+        let dest_perms = fs::metadata(&dest).unwrap().permissions();
+        let mode = dest_perms.mode() & 0o777;
+
+        // Verify that we didn't copy 777 permissions
+        assert_ne!(mode, 0o777);
+        // Verify no execute bits (assuming standard umask isn't 000)
+        assert_eq!(mode & 0o111, 0, "Destination file should not be executable");
+        // Verify standard read/write permissions for owner (rw-------)
+        assert_eq!(
+            mode & 0o600,
+            0o600,
+            "Owner should have read/write permissions"
+        );
+    }
 }
 
 /// Copies a file to a destination, failing if the destination already exists.
@@ -625,10 +661,10 @@ fn atomic_copy(src: &Path, dest: &Path) -> io::Result<u64> {
         .open(dest)?;
     let len = io::copy(&mut reader, &mut writer)?;
 
-    // Attempt to copy permissions (best effort)
-    if let Ok(meta) = fs::metadata(src) {
-        let _ = writer.set_permissions(meta.permissions());
-    }
+    // Note: We do NOT copy permissions from the source file.
+    // For photos/archives, it's safer to rely on the user's umask and default file creation
+    // permissions (typically 0644 or 0600) rather than trusting metadata from the source
+    // filesystem (e.g. FAT/exFAT often reports 0777/0755).
 
     Ok(len)
 }
