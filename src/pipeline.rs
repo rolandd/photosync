@@ -13,7 +13,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use chrono::NaiveDate;
-use nom_exif::{EntryValue, Exif, ExifIter, ExifTag, MediaParser, MediaSource};
+use nom_exif::{EntryValue, ExifIter, ExifTag, MediaParser, MediaSource};
 use walkdir::WalkDir;
 
 use crate::config::Config;
@@ -260,22 +260,35 @@ fn file_processor(
             Err(_) => continue,
         };
 
-        let exif: Exif = iter.into();
+        let mut model = None;
+        let mut date = None;
 
-        let model = exif
-            .get(ExifTag::Model)
-            .and_then(|v| v.as_str())
-            .map(paths::sanitize_str);
+        for mut entry in iter {
+            if let Some(tag) = entry.tag() {
+                match tag {
+                    ExifTag::Model => {
+                        model = entry
+                            .take_value()
+                            .and_then(|v| v.as_str().map(paths::sanitize_str));
+                    }
+                    ExifTag::DateTimeOriginal => {
+                        date = entry.take_value().and_then(|v| match v {
+                            // nom-exif returns dates in different formats depending on the file type:
+                            // - With timezone: EntryValue::Time (chrono DateTime<FixedOffset>)
+                            // - Without timezone: EntryValue::NaiveDateTime
+                            EntryValue::Time(dt) => Some(dt.date_naive()),
+                            EntryValue::NaiveDateTime(dt) => Some(dt.date()),
+                            _ => None,
+                        });
+                    }
+                    _ => {}
+                }
+            }
 
-        // Try to get date from EXIF.
-        // nom-exif returns dates in different formats depending on the file type:
-        // - With timezone: EntryValue::Time (chrono DateTime<FixedOffset>)
-        // - Without timezone: EntryValue::NaiveDateTime
-        let date = exif.get(ExifTag::DateTimeOriginal).and_then(|v| match v {
-            EntryValue::Time(dt) => Some(dt.date_naive()),
-            EntryValue::NaiveDateTime(dt) => Some(dt.date()),
-            _ => None,
-        });
+            if model.is_some() && date.is_some() {
+                break;
+            }
+        }
 
         if let (Some(model), Some(date)) = (model, date) {
             send_progress(
