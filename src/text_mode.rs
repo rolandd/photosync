@@ -23,16 +23,16 @@ pub fn run_text_mode(rx: Receiver<ProgressMsg>) -> Summary {
         // Print progress (text-mode specific)
         match &msg {
             ProgressMsg::ScanningDir(path) => {
-                println!("Scanning: {}", path.display());
+                println!("Scanning: {}", path);
             }
             ProgressMsg::ScanComplete => {
                 println!("Scan complete.");
             }
             ProgressMsg::ExifExtracted { path, model } => {
-                println!("Found: {} ({})", path.display(), model);
+                println!("Found: {} ({})", path, model);
             }
             ProgressMsg::CopyStarted { src, dest, .. } => {
-                println!("Copying: {} -> {}", src.display(), dest.display());
+                println!("Copying: {} -> {}", src, dest);
             }
             ProgressMsg::CopyComplete {
                 filename,
@@ -50,10 +50,10 @@ pub fn run_text_mode(rx: Receiver<ProgressMsg>) -> Summary {
                 eprintln!("  Error: {filename}: {error}");
             }
             ProgressMsg::ScanError { path, error } => {
-                eprintln!("  Scan Error: {}: {}", path.display(), error);
+                eprintln!("  Scan Error: {}: {}", path, error);
             }
             ProgressMsg::SuspiciousDuplicate { src, .. } => {
-                eprintln!("  WARNING: Suspicious duplicate: {}", src.display());
+                eprintln!("  WARNING: Suspicious duplicate: {}", src);
             }
             // UnknownCamera is tracked in summary, no need to log each instance
             _ => {}

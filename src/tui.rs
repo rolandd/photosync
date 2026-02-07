@@ -191,8 +191,8 @@ impl App {
             ProgressMsg::SuspiciousDuplicate { src, .. } => {
                 let filename = src
                     .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| src.display().to_string());
+                    .map(|n| crate::paths::sanitize_str(&n.to_string_lossy()))
+                    .unwrap_or_else(|| src.to_string());
                 self.add_recent(
                     format!("⚠ {}  (CONTENTS DIFFER!)", filename),
                     Style::default().fg(Color::LightRed),
@@ -206,7 +206,7 @@ impl App {
             }
             ProgressMsg::ScanError { path, error } => {
                 self.add_recent(
-                    format!("! Scan Error: {}: {}", path.display(), error),
+                    format!("! Scan Error: {}: {}", path, error),
                     Style::default().fg(Color::Red),
                 );
             }
@@ -271,7 +271,7 @@ fn ui(frame: &mut Frame, app: &App) {
         let dir = app
             .scanning_dir
             .as_ref()
-            .map(|p| p.display().to_string())
+            .map(|p| p.to_string())
             .unwrap_or_else(|| "...".to_string());
         format!(
             "Scanning: {}  Files: {}  EXIF: {}",
@@ -285,13 +285,13 @@ fn ui(frame: &mut Frame, app: &App) {
     let current_text = if let Some((src, dest, size)) = &app.current_file {
         let filename = src
             .file_name()
-            .map(|n| n.to_string_lossy())
+            .map(|n| crate::paths::sanitize_str(&n.to_string_lossy()))
             .unwrap_or_default();
         format!(
             "Copying: {} ({})\nTo: {}",
             filename,
             progress::format_bytes(*size),
-            dest.display()
+            dest
         )
     } else if app.done {
         "✓ Complete!".to_string()
