@@ -693,7 +693,7 @@ fn file_handler(
                 continue;
             }
             DestDirResult::TemplateError(msg) => {
-                report_error(&progress_tx, info.path.display().to_string(), msg);
+                report_error(&progress_tx, info.path.to_string(), msg);
                 continue;
             }
         };
@@ -701,7 +701,7 @@ fn file_handler(
         let Some(filename) = info.path.file_name() else {
             report_error(
                 &progress_tx,
-                info.path.display().to_string(),
+                info.path.to_string(),
                 "No filename in path",
             );
             continue;
