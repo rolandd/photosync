@@ -32,7 +32,9 @@ use crate::progress::{self, ProgressMsg, Summary};
 const SPEED_WINDOW_SIZE: usize = 10;
 
 /// Spinner frames for scanning animation
-const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const SPINNER_FRAMES: &[&str] = &[
+    " ", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂",
+];
 
 /// Item in the recent activity log.
 #[derive(Clone)]
