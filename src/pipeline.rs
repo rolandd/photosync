@@ -648,6 +648,48 @@ mod tests {
             "Owner should have read/write permissions"
         );
     }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_atomic_copy_rejects_fifo() {
+        use std::process::Command;
+        use std::thread;
+
+        let dir = tempfile::tempdir().unwrap();
+        let fifo_path = dir.path().join("test_fifo");
+        let dest_path = dir.path().join("fifo_copy.bin");
+
+        // Create FIFO using mkfifo command
+        let status = Command::new("mkfifo")
+            .arg(&fifo_path)
+            .status()
+            .expect("failed to execute mkfifo");
+        assert!(status.success(), "mkfifo failed");
+
+        // Spawn a thread to open the FIFO for writing.
+        // Opening a FIFO for reading (in atomic_copy) blocks until a writer opens it.
+        // Opening for writing blocks until a reader opens it.
+        let fifo_clone = fifo_path.clone();
+        let handle = thread::spawn(move || {
+            // Open for writing to unblock the reader in main thread.
+            // Using OpenOptions to explicitly open for writing.
+            if let Ok(mut file) = fs::OpenOptions::new().write(true).open(fifo_clone) {
+                let _ = file.write_all(b"data");
+            }
+        });
+
+        // Attempt to copy from the FIFO.
+        // This should fail because it's not a regular file.
+        let result = atomic_copy(&fifo_path, &dest_path);
+
+        // Ensure writer thread finishes
+        let _ = handle.join();
+
+        assert!(result.is_err(), "atomic_copy should fail for FIFO");
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(err.to_string(), "Source is not a regular file");
+    }
 }
 
 /// Copies a file to a destination, failing if the destination already exists.
@@ -655,6 +697,16 @@ mod tests {
 /// between the existence check and the copy.
 fn atomic_copy(src: &Path, dest: &Path) -> io::Result<u64> {
     let mut reader = File::open(src)?;
+
+    // Security check: ensure we are reading from a regular file, not a device/pipe/socket.
+    // This mitigates DoS risks (reading infinite streams like /dev/zero) and blocking on pipes.
+    if !reader.metadata()?.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Source is not a regular file",
+        ));
+    }
+
     let mut writer = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
