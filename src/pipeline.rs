@@ -707,7 +707,8 @@ fn file_handler(
             continue;
         };
         let filename_str = paths::sanitize_str(&filename.to_string_lossy());
-        let dest_path = dest_dir.join(filename);
+        // Use sanitized filename for destination to prevent creating files with control characters
+        let dest_path = dest_dir.join(&filename_str);
 
         if dest_path.exists() {
             // Check if contents are the same
