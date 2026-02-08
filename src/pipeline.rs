@@ -699,11 +699,7 @@ fn file_handler(
         };
 
         let Some(filename) = info.path.file_name() else {
-            report_error(
-                &progress_tx,
-                info.path.to_string(),
-                "No filename in path",
-            );
+            report_error(&progress_tx, info.path.to_string(), "No filename in path");
             continue;
         };
         let filename_str = paths::sanitize_str(&filename.to_string_lossy());
