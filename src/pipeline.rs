@@ -17,7 +17,7 @@ use nom_exif::{EntryValue, Exif, ExifIter, ExifTag, MediaParser, MediaSource};
 use walkdir::WalkDir;
 
 use crate::config::Config;
-use crate::paths::{DestPath, SourcePath};
+use crate::paths::{self, DestPath, SourcePath};
 use crate::progress::ProgressMsg;
 
 /// Channel buffer size for pipeline stages.
@@ -228,7 +228,7 @@ fn file_walker(
                     &progress_tx,
                     ProgressMsg::ScanError {
                         path: SourcePath::new(path),
-                        error: e.to_string(),
+                        error: paths::sanitize_str(&e.to_string()),
                     },
                 );
             }
@@ -265,7 +265,7 @@ fn file_processor(
         let model = exif
             .get(ExifTag::Model)
             .and_then(|v| v.as_str())
-            .map(ToString::to_string);
+            .map(paths::sanitize_str);
 
         // Try to get date from EXIF.
         // nom-exif returns dates in different formats depending on the file type:
@@ -693,21 +693,18 @@ fn file_handler(
                 continue;
             }
             DestDirResult::TemplateError(msg) => {
-                report_error(&progress_tx, info.path.display().to_string(), msg);
+                report_error(&progress_tx, info.path.to_string(), msg);
                 continue;
             }
         };
 
         let Some(filename) = info.path.file_name() else {
-            report_error(
-                &progress_tx,
-                info.path.display().to_string(),
-                "No filename in path",
-            );
+            report_error(&progress_tx, info.path.to_string(), "No filename in path");
             continue;
         };
-        let filename_str = filename.to_string_lossy().into_owned();
-        let dest_path = dest_dir.join(filename);
+        let filename_str = paths::sanitize_str(&filename.to_string_lossy());
+        // Use sanitized filename for destination to prevent creating files with control characters
+        let dest_path = dest_dir.join(&filename_str);
 
         if dest_path.exists() {
             // Check if contents are the same

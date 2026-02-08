@@ -189,8 +189,8 @@ impl fmt::Display for Summary {
                 self.suspicious_duplicates.len()
             )?;
             for (src, dest) in &self.suspicious_duplicates {
-                writeln!(f, "  Source: {}", src.display())?;
-                writeln!(f, "    Dest: {}", dest.display())?;
+                writeln!(f, "  Source: {}", src)?;
+                writeln!(f, "    Dest: {}", dest)?;
             }
         }
 
