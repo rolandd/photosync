@@ -13,7 +13,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use chrono::NaiveDate;
-use nom_exif::{EntryValue, ExifIter, ExifTag, MediaParser, MediaSource};
+use nom_exif::{ExifIter, ExifTag, MediaParser, MediaSource};
 use walkdir::WalkDir;
 
 use crate::config::Config;
@@ -272,14 +272,10 @@ fn file_processor(
                             .and_then(|v| v.as_str().map(paths::sanitize_str));
                     }
                     ExifTag::DateTimeOriginal => {
-                        date = entry.take_value().and_then(|v| match v {
-                            // nom-exif returns dates in different formats depending on the file type:
-                            // - With timezone: EntryValue::Time (chrono DateTime<FixedOffset>)
-                            // - Without timezone: EntryValue::NaiveDateTime
-                            EntryValue::Time(dt) => Some(dt.date_naive()),
-                            EntryValue::NaiveDateTime(dt) => Some(dt.date()),
-                            _ => None,
-                        });
+                        date = entry
+                            .take_value()
+                            .and_then(|v| v.as_time_components())
+                            .map(|(ndt, _offset)| ndt.date());
                     }
                     _ => {}
                 }
