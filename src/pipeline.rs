@@ -703,21 +703,71 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(err.to_string(), "Source is not a regular file");
     }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_atomic_copy_rejects_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.txt");
+        let link = dir.path().join("link_to_target");
+        let dest = dir.path().join("dest.txt");
+
+        // Create target file
+        {
+            let mut f = File::create(&target).unwrap();
+            f.write_all(b"secret data").unwrap();
+        }
+
+        // Create symlink
+        symlink(&target, &link).unwrap();
+
+        // Try to copy from symlink
+        // This SHOULD fail if we want to prevent symlink following
+        let result = atomic_copy(&link, &dest);
+
+        assert!(result.is_err(), "atomic_copy should reject symlinks");
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
 }
 
 /// Copies a file to a destination, failing if the destination already exists.
 /// This prevents TOCTOU races where a symlink is created at the destination
 /// between the existence check and the copy.
 fn atomic_copy(src: &Path, dest: &Path) -> io::Result<u64> {
+    // 1. Check if it's a symlink first (defense against basic attacks)
+    let src_meta = fs::symlink_metadata(src)?;
+    if src_meta.is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Source is a symlink",
+        ));
+    }
+
     let mut reader = File::open(src)?;
+    let reader_meta = reader.metadata()?;
 
     // Security check: ensure we are reading from a regular file, not a device/pipe/socket.
     // This mitigates DoS risks (reading infinite streams like /dev/zero) and blocking on pipes.
-    if !reader.metadata()?.is_file() {
+    if !reader_meta.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "Source is not a regular file",
         ));
+    }
+
+    // 2. TOCTOU Protection (Unix only): Verify opened file matches the one we checked.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if src_meta.ino() != reader_meta.ino() || src_meta.dev() != reader_meta.dev() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Source file changed during open (possible symlink attack)",
+            ));
+        }
     }
 
     let mut writer = fs::OpenOptions::new()
