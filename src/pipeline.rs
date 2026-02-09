@@ -6,7 +6,7 @@
 //! 3. **Handler**: Copies files to destination with deduplication
 
 use std::fs::{self, File};
-use std::io::{self, Read};
+use std::io::{self, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
@@ -142,10 +142,10 @@ impl FileComparator {
         }
     }
 
-    /// Compare two files for equality.
-    fn compare(&mut self, path1: &Path, path2: &Path) -> io::Result<bool> {
+    /// Compare an open file with another file path for equality.
+    fn compare_file(&mut self, file1: &mut File, path2: &Path) -> io::Result<bool> {
         // Fast path: compare sizes first
-        let meta1 = fs::metadata(path1)?;
+        let meta1 = file1.metadata()?;
         let meta2 = fs::metadata(path2)?;
         if meta1.len() != meta2.len() {
             return Ok(false);
@@ -159,12 +159,12 @@ impl FileComparator {
             self.buf2.resize(FILE_COMPARE_CHUNK_SIZE, 0);
         }
 
-        // Chunked byte comparison
-        let mut file1 = File::open(path1)?;
+        // Rewind file1 to start
+        file1.seek(io::SeekFrom::Start(0))?;
         let mut file2 = File::open(path2)?;
 
         loop {
-            let n1 = Self::read_chunk(&mut file1, &mut self.buf1)?;
+            let n1 = Self::read_chunk(file1, &mut self.buf1)?;
             let n2 = Self::read_chunk(&mut file2, &mut self.buf2)?;
 
             if n1 != n2 || self.buf1[..n1] != self.buf2[..n2] {
@@ -418,7 +418,8 @@ mod tests {
         let file2 = create_test_file(dir.path(), "file2.txt", b"Hello, world!");
 
         let mut comparator = FileComparator::new();
-        assert!(comparator.compare(&file1, &file2).unwrap());
+        let mut f1 = File::open(&file1).unwrap();
+        assert!(comparator.compare_file(&mut f1, &file2).unwrap());
     }
 
     #[test]
@@ -428,7 +429,8 @@ mod tests {
         let file2 = create_test_file(dir.path(), "file2.txt", b"much longer content");
 
         let mut comparator = FileComparator::new();
-        assert!(!comparator.compare(&file1, &file2).unwrap());
+        let mut f1 = File::open(&file1).unwrap();
+        assert!(!comparator.compare_file(&mut f1, &file2).unwrap());
     }
 
     #[test]
@@ -438,7 +440,8 @@ mod tests {
         let file2 = create_test_file(dir.path(), "file2.txt", b"BBBB");
 
         let mut comparator = FileComparator::new();
-        assert!(!comparator.compare(&file1, &file2).unwrap());
+        let mut f1 = File::open(&file1).unwrap();
+        assert!(!comparator.compare_file(&mut f1, &file2).unwrap());
     }
 
     #[test]
@@ -448,7 +451,8 @@ mod tests {
         let file2 = dir.path().join("missing.txt");
 
         let mut comparator = FileComparator::new();
-        assert!(comparator.compare(&file1, &file2).is_err());
+        let mut f1 = File::open(&file1).unwrap();
+        assert!(comparator.compare_file(&mut f1, &file2).is_err());
     }
 
     #[test]
@@ -557,14 +561,16 @@ mod tests {
         let file2 = create_test_file(dir.path(), "large2.bin", &large_content);
 
         let mut comparator = FileComparator::new();
-        assert!(comparator.compare(&file1, &file2).unwrap());
+        let mut f1 = File::open(&file1).unwrap();
+        assert!(comparator.compare_file(&mut f1, &file2).unwrap());
 
         // Create a file that differs only in the second chunk
         let mut different_content = large_content.clone();
         different_content[150_000] = 0xFF; // Modify byte in second chunk
         let file3 = create_test_file(dir.path(), "large3.bin", &different_content);
 
-        assert!(!comparator.compare(&file1, &file3).unwrap());
+        // Reset f1 for next comparison or open again? compare_file rewinds it.
+        assert!(!comparator.compare_file(&mut f1, &file3).unwrap());
     }
 
     #[test]
@@ -643,8 +649,9 @@ mod tests {
             file.set_permissions(perms).unwrap();
         }
 
-        // Run atomic_copy
-        atomic_copy(&src, &dest).unwrap();
+        // Run atomic_copy_file
+        let mut file = File::open(&src).unwrap();
+        atomic_copy_file(&mut file, &dest).unwrap();
 
         // Check destination permissions
         let dest_perms = fs::metadata(&dest).unwrap().permissions();
@@ -680,7 +687,7 @@ mod tests {
         assert!(status.success(), "mkfifo failed");
 
         // Spawn a thread to open the FIFO for writing.
-        // Opening a FIFO for reading (in atomic_copy) blocks until a writer opens it.
+        // Opening a FIFO for reading blocks until a writer opens it.
         // Opening for writing blocks until a reader opens it.
         let fifo_clone = fifo_path.clone();
         let handle = thread::spawn(move || {
@@ -692,13 +699,16 @@ mod tests {
         });
 
         // Attempt to copy from the FIFO.
+        // open() will succeed once the writer thread opens it.
+        let mut reader = File::open(&fifo_path).expect("Failed to open FIFO");
+
         // This should fail because it's not a regular file.
-        let result = atomic_copy(&fifo_path, &dest_path);
+        let result = atomic_copy_file(&mut reader, &dest_path);
 
         // Ensure writer thread finishes
         let _ = handle.join();
 
-        assert!(result.is_err(), "atomic_copy should fail for FIFO");
+        assert!(result.is_err(), "atomic_copy_file should fail for FIFO");
         let err = result.unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(err.to_string(), "Source is not a regular file");
@@ -708,11 +718,10 @@ mod tests {
 /// Copies a file to a destination, failing if the destination already exists.
 /// This prevents TOCTOU races where a symlink is created at the destination
 /// between the existence check and the copy.
-fn atomic_copy(src: &Path, dest: &Path) -> io::Result<u64> {
-    let mut reader = File::open(src)?;
-
+fn atomic_copy_file(reader: &mut File, dest: &Path) -> io::Result<u64> {
     // Security check: ensure we are reading from a regular file, not a device/pipe/socket.
     // This mitigates DoS risks (reading infinite streams like /dev/zero) and blocking on pipes.
+    // Uses fstat (cheap).
     if !reader.metadata()?.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -720,11 +729,14 @@ fn atomic_copy(src: &Path, dest: &Path) -> io::Result<u64> {
         ));
     }
 
+    // Rewind reader just in case
+    reader.seek(io::SeekFrom::Start(0))?;
+
     let mut writer = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(dest)?;
-    let len = io::copy(&mut reader, &mut writer)?;
+    let len = io::copy(reader, &mut writer)?;
 
     // Note: We do NOT copy permissions from the source file.
     // For photos/archives, it's safer to rely on the user's umask and default file creation
@@ -744,6 +756,7 @@ fn file_handler(
     progress_tx: SyncSender<ProgressMsg>,
 ) {
     let mut comparator = FileComparator::new();
+    let mut last_dest_dir: Option<PathBuf> = None;
 
     for info in rx {
         let dest_dir = match compute_dest_dir(&target_dir, &config, &info.model, info.date) {
@@ -771,10 +784,47 @@ fn file_handler(
         // Use sanitized filename for destination to prevent creating files with control characters
         let dest_path = dest_dir.join(&filename_str);
 
+        // Open source file early to reuse handle and avoid double open/stat
+        let mut src_file = match File::open(&info.path) {
+            Ok(f) => f,
+            Err(e) => {
+                report_error(
+                    &progress_tx,
+                    info.path.to_string(),
+                    format!("Failed to open source: {e}"),
+                );
+                continue;
+            }
+        };
+
+        // Use fstat (cheap) to get size and check if regular file
+        let src_meta = match src_file.metadata() {
+            Ok(m) => m,
+            Err(e) => {
+                report_error(
+                    &progress_tx,
+                    info.path.to_string(),
+                    format!("Failed to stat source: {e}"),
+                );
+                continue;
+            }
+        };
+
+        if !src_meta.is_file() {
+            // Already filtered by walker, but double check for safety
+            report_error(
+                &progress_tx,
+                info.path.to_string(),
+                "Source is not a regular file",
+            );
+            continue;
+        }
+        let size = src_meta.len();
+
         if dest_path.exists() {
-            // Check if contents are the same
+            // Check if contents are the same reusing src_file
             let is_same = comparator
-                .compare(&info.path, &dest_path)
+                .compare_file(&mut src_file, &dest_path)
                 .unwrap_or_else(|e| {
                     // Log error and assume different (safer)
                     report_error(
@@ -805,8 +855,6 @@ fn file_handler(
             continue;
         }
 
-        let size = fs::metadata(&info.path).map(|m| m.len()).unwrap_or(0);
-
         if dry_run {
             send_progress(
                 &progress_tx,
@@ -827,13 +875,17 @@ fn file_handler(
             continue;
         }
 
-        if let Err(e) = fs::create_dir_all(&dest_dir) {
-            report_error(
-                &progress_tx,
-                filename_str,
-                format!("Failed to create directory: {e}"),
-            );
-            continue;
+        // Create destination directory with caching to avoid redundant calls
+        if last_dest_dir.as_ref() != Some(&dest_dir) {
+            if let Err(e) = fs::create_dir_all(&dest_dir) {
+                report_error(
+                    &progress_tx,
+                    filename_str,
+                    format!("Failed to create directory: {e}"),
+                );
+                continue;
+            }
+            last_dest_dir = Some(dest_dir.clone());
         }
 
         send_progress(
@@ -846,7 +898,8 @@ fn file_handler(
         );
 
         let start = Instant::now();
-        if let Err(e) = atomic_copy(&info.path, &dest_path) {
+        // Use atomic_copy_file with already open file
+        if let Err(e) = atomic_copy_file(&mut src_file, &dest_path) {
             report_error(&progress_tx, filename_str, format!("Copy failed: {e}"));
             continue;
         }
