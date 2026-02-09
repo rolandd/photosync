@@ -42,6 +42,11 @@ struct RecentItem {
 /// This is large enough to handle most terminal sizes without needing resize math.
 const HISTORY_SIZE: usize = 100;
 
+/// Spinner animation frames (vertical bar / equalizer style).
+const SPINNER_FRAMES: &[&str] = &[
+    " ", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂",
+];
+
 /// RAII guard to ensure terminal is restored on panic or early return.
 struct TerminalGuard;
 
@@ -78,6 +83,7 @@ pub struct App {
 
     // State
     done: bool,
+    spinner_idx: usize,
 }
 
 impl App {
@@ -94,7 +100,12 @@ impl App {
             recent_items: VecDeque::with_capacity(size),
             max_recent_items: size,
             done: false,
+            spinner_idx: 0,
         }
+    }
+
+    fn tick(&mut self) {
+        self.spinner_idx = (self.spinner_idx + 1) % SPINNER_FRAMES.len();
     }
 }
 
@@ -274,8 +285,8 @@ fn ui(frame: &mut Frame, app: &App) {
             .map(|p| p.to_string())
             .unwrap_or_else(|| "...".to_string());
         format!(
-            "Scanning: {}  Files: {}  EXIF: {}",
-            dir, app.summary.files_found, app.files_with_exif
+            "{} Scanning: {}  Files: {}  EXIF: {}",
+            SPINNER_FRAMES[app.spinner_idx], dir, app.summary.files_found, app.files_with_exif
         )
     };
     let scan_para = Paragraph::new(scan_text).style(Style::default().fg(Color::White));
@@ -288,7 +299,8 @@ fn ui(frame: &mut Frame, app: &App) {
             .map(|n| crate::paths::sanitize_str(&n.to_string_lossy()))
             .unwrap_or_default();
         format!(
-            "Copying: {} ({})\nTo: {}",
+            "{} Copying: {} ({})\nTo: {}",
+            SPINNER_FRAMES[app.spinner_idx],
             filename,
             progress::format_bytes(*size),
             dest
@@ -296,7 +308,7 @@ fn ui(frame: &mut Frame, app: &App) {
     } else if app.done {
         "✓ Complete!".to_string()
     } else {
-        "Waiting...".to_string()
+        format!("{} Waiting...", SPINNER_FRAMES[app.spinner_idx])
     };
     let current_style = if app.done {
         Style::default()
@@ -402,6 +414,7 @@ pub fn run_tui(rx: Receiver<ProgressMsg>) -> Result<Summary> {
 
         // Redraw at tick rate
         if last_draw.elapsed() >= tick_rate {
+            app.tick();
             terminal
                 .draw(|f| ui(f, &app))
                 .context("Failed to draw frame")?;
@@ -548,5 +561,19 @@ mod tests {
         }
 
         assert!(row_text.contains("Press 'q' to quit"));
+    }
+
+    #[test]
+    fn test_app_tick() {
+        let mut app = App::default();
+        assert_eq!(app.spinner_idx, 0);
+        app.tick();
+        assert_eq!(app.spinner_idx, 1);
+
+        // Loop around
+        for _ in 0..SPINNER_FRAMES.len() {
+            app.tick();
+        }
+        assert_eq!(app.spinner_idx, 1);
     }
 }
