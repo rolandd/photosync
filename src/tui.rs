@@ -31,6 +31,11 @@ use crate::progress::{self, ProgressMsg, Summary};
 /// Number of recent copy operations used for speed calculation.
 const SPEED_WINDOW_SIZE: usize = 10;
 
+/// Spinner animation frames (vertical bars).
+const SPINNER: &[&str] = &[
+    " ", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▇", "▆", "▅", "▄", "▃", "▂",
+];
+
 /// Item in the recent activity log.
 #[derive(Clone)]
 struct RecentItem {
@@ -78,6 +83,7 @@ pub struct App {
 
     // State
     done: bool,
+    spinner_idx: usize,
 }
 
 impl App {
@@ -94,6 +100,7 @@ impl App {
             recent_items: VecDeque::with_capacity(size),
             max_recent_items: size,
             done: false,
+            spinner_idx: 0,
         }
     }
 }
@@ -105,6 +112,14 @@ impl Default for App {
 }
 
 impl App {
+    fn tick(&mut self) {
+        self.spinner_idx = (self.spinner_idx + 1) % SPINNER.len();
+    }
+
+    fn spinner(&self) -> &'static str {
+        SPINNER[self.spinner_idx]
+    }
+
     fn add_recent(&mut self, text: String, style: Style) {
         if self.recent_items.len() >= self.max_recent_items {
             self.recent_items.pop_back();
@@ -274,8 +289,11 @@ fn ui(frame: &mut Frame, app: &App) {
             .map(|p| p.to_string())
             .unwrap_or_else(|| "...".to_string());
         format!(
-            "Scanning: {}  Files: {}  EXIF: {}",
-            dir, app.summary.files_found, app.files_with_exif
+            "{} Scanning: {}  Files: {}  EXIF: {}",
+            app.spinner(),
+            dir,
+            app.summary.files_found,
+            app.files_with_exif
         )
     };
     let scan_para = Paragraph::new(scan_text).style(Style::default().fg(Color::White));
@@ -296,7 +314,7 @@ fn ui(frame: &mut Frame, app: &App) {
     } else if app.done {
         "✓ Complete!".to_string()
     } else {
-        "Waiting...".to_string()
+        format!("{} Waiting...", app.spinner())
     };
     let current_style = if app.done {
         Style::default()
@@ -402,6 +420,7 @@ pub fn run_tui(rx: Receiver<ProgressMsg>) -> Result<Summary> {
 
         // Redraw at tick rate
         if last_draw.elapsed() >= tick_rate {
+            app.tick();
             terminal
                 .draw(|f| ui(f, &app))
                 .context("Failed to draw frame")?;
@@ -548,5 +567,66 @@ mod tests {
         }
 
         assert!(row_text.contains("Press 'q' to quit"));
+    }
+
+    #[test]
+    fn test_app_tick() {
+        let mut app = App::default();
+        let initial = app.spinner_idx;
+        app.tick();
+        assert_eq!(app.spinner_idx, (initial + 1) % SPINNER.len());
+    }
+
+    #[test]
+    fn test_app_spinner_helper() {
+        let mut app = App::default();
+        // Starts at 0
+        assert_eq!(app.spinner(), SPINNER[0]);
+        app.tick();
+        assert_eq!(app.spinner(), SPINNER[1]);
+    }
+
+    #[test]
+    fn test_ui_spinner() {
+        let mut app = App::default();
+        // Waiting state (current_file is None, done is false)
+        // spinner_idx is 0 by default, so SPINNER[0] is " "
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|f| ui(f, &app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        // Check for "Waiting..." string
+        let mut found_waiting = false;
+        for y in 0..24 {
+            let mut row_text = String::new();
+            for x in 0..80 {
+                row_text.push_str(buffer[(x, y)].symbol());
+            }
+            if row_text.contains("Waiting...") {
+                found_waiting = true;
+            }
+        }
+        assert!(found_waiting);
+
+        // Advance tick to get a visible character
+        app.tick(); // index 1 -> "▂"
+        terminal.draw(|f| ui(f, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        let mut found_spinner = false;
+        for y in 0..24 {
+            let mut row_text = String::new();
+            for x in 0..80 {
+                row_text.push_str(buffer[(x, y)].symbol());
+            }
+            if row_text.contains("▂ Waiting...") {
+                found_spinner = true;
+                break;
+            }
+        }
+        assert!(found_spinner, "Spinner character not found in UI output");
     }
 }
