@@ -233,11 +233,26 @@ impl App {
 fn ui(frame: &mut Frame, app: &App) {
     let area = frame.area();
 
+    // Determine border color based on status
+    let border_color = if app.done {
+        if app.summary.files_errored > 0 {
+            Color::Red
+        } else if !app.summary.suspicious_duplicates.is_empty()
+            || !app.summary.unknown_cameras.is_empty()
+        {
+            Color::Yellow
+        } else {
+            Color::Green
+        }
+    } else {
+        Color::Cyan
+    };
+
     // Outer block
     let mut block = Block::default()
         .title(" Photosync ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(border_color));
 
     if !app.done {
         block = block.title_bottom(
@@ -455,6 +470,7 @@ pub fn run_tui(rx: Receiver<ProgressMsg>) -> Result<Summary> {
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
+    use std::path::PathBuf;
 
     #[test]
     fn test_app_default() {
@@ -628,5 +644,49 @@ mod tests {
             }
         }
         assert!(found_spinner, "Spinner character not found in UI output");
+    }
+
+    #[test]
+    fn test_ui_border_color_status() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        // 1. Success state
+        let mut app = App::default();
+        app.done = true;
+        terminal.draw(|f| ui(f, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        // Check top-left corner (0,0) style. Border is usually Cyan, should be Green.
+        let cell = &buffer[(0, 0)];
+        assert_eq!(cell.style().fg, Some(Color::Green));
+
+        // 2. Error state
+        let mut app = App::default();
+        app.done = true;
+        app.summary.files_errored = 1;
+        terminal.draw(|f| ui(f, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let cell = &buffer[(0, 0)];
+        assert_eq!(cell.style().fg, Some(Color::Red));
+
+        // 3. Warning state (suspicious duplicate)
+        let mut app = App::default();
+        app.done = true;
+        app.summary.suspicious_duplicates.push((
+            SourcePath::new(PathBuf::from("a")),
+            DestPath::new(PathBuf::from("b")),
+        ));
+        terminal.draw(|f| ui(f, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let cell = &buffer[(0, 0)];
+        assert_eq!(cell.style().fg, Some(Color::Yellow));
+
+        // 4. Running state
+        let mut app = App::default();
+        app.done = false;
+        terminal.draw(|f| ui(f, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let cell = &buffer[(0, 0)];
+        assert_eq!(cell.style().fg, Some(Color::Cyan));
     }
 }
