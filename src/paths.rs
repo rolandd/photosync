@@ -32,6 +32,16 @@ pub fn sanitize_str(s: &str) -> String {
 ///
 /// If the resulting filename is empty, returns "_".
 pub fn sanitize_filename(s: &str) -> String {
+    // Optimization: Check if sanitization is needed to avoid unnecessary processing
+    let needs_sanitization = s.chars().any(|c| {
+        c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+    }) || s.ends_with([' ', '.'])
+        || s.is_empty();
+
+    if !needs_sanitization {
+        return s.to_string();
+    }
+
     // 1. Replace invalid characters
     let sanitized: String = s
         .chars()
