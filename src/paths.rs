@@ -45,7 +45,7 @@ pub fn sanitize_filename(s: &str) -> String {
         .collect();
 
     // 2. Trim trailing spaces and dots (Windows disallows these at end of filename)
-    let trimmed = sanitized.trim_end_matches(|c| c == ' ' || c == '.');
+    let trimmed = sanitized.trim_end_matches([' ', '.']);
 
     if trimmed.is_empty() {
         // Fallback if filename becomes empty (e.g. was just "..." or "   ")
