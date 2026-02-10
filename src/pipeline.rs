@@ -6,7 +6,7 @@
 //! 3. **Handler**: Copies files to destination with deduplication
 
 use std::fs::{self, File};
-use std::io::{self, Read, Seek};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
@@ -143,6 +143,8 @@ impl FileComparator {
     }
 
     /// Compare an open file with another file path for equality.
+    ///
+    /// **Note:** The caller must ensure that `file1` is at the beginning of the file (position 0).
     fn compare_file(&mut self, file1: &mut File, size1: u64, path2: &Path) -> io::Result<bool> {
         // Fast path: compare sizes first
         let meta2 = fs::metadata(path2)?;
@@ -158,8 +160,6 @@ impl FileComparator {
             self.buf2.resize(FILE_COMPARE_CHUNK_SIZE, 0);
         }
 
-        // Rewind file1 to start
-        file1.seek(io::SeekFrom::Start(0))?;
         let mut file2 = File::open(path2)?;
 
         loop {
