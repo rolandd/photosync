@@ -649,45 +649,72 @@ mod tests {
 
     #[test]
     fn test_ui_border_color_status() {
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
+        struct TestCase {
+            name: &'static str,
+            done: bool,
+            setup: fn(&mut App),
+            expected_color: Color,
+        }
 
-        // 1. Success state
-        let mut app = App::default();
-        app.done = true;
-        terminal.draw(|f| ui(f, &app)).unwrap();
-        let buffer = terminal.backend().buffer();
-        // Check top-left corner (0,0) style. Border is usually Cyan, should be Green.
-        let cell = &buffer[(0, 0)];
-        assert_eq!(cell.style().fg, Some(Color::Green));
+        let cases = vec![
+            TestCase {
+                name: "Success state",
+                done: true,
+                setup: |_| {},
+                expected_color: Color::Green,
+            },
+            TestCase {
+                name: "Error state (files errored)",
+                done: true,
+                setup: |app| app.summary.files_errored = 1,
+                expected_color: Color::Red,
+            },
+            TestCase {
+                name: "Warning state (suspicious duplicate)",
+                done: true,
+                setup: |app| {
+                    app.summary.suspicious_duplicates.push((
+                        SourcePath::new(PathBuf::from("a")),
+                        DestPath::new(PathBuf::from("b")),
+                    ));
+                },
+                expected_color: Color::Yellow,
+            },
+            TestCase {
+                name: "Warning state (unknown camera)",
+                done: true,
+                setup: |app| {
+                    app.summary
+                        .unknown_cameras
+                        .insert("UnknownModel".to_string(), 1);
+                },
+                expected_color: Color::Yellow,
+            },
+            TestCase {
+                name: "Running state",
+                done: false,
+                setup: |_| {},
+                expected_color: Color::Cyan,
+            },
+        ];
 
-        // 2. Error state
-        let mut app = App::default();
-        app.done = true;
-        app.summary.files_errored = 1;
-        terminal.draw(|f| ui(f, &app)).unwrap();
-        let buffer = terminal.backend().buffer();
-        let cell = &buffer[(0, 0)];
-        assert_eq!(cell.style().fg, Some(Color::Red));
+        for case in cases {
+            let backend = TestBackend::new(80, 24);
+            let mut terminal = Terminal::new(backend).unwrap();
+            let mut app = App::default();
+            app.done = case.done;
+            (case.setup)(&mut app);
 
-        // 3. Warning state (suspicious duplicate)
-        let mut app = App::default();
-        app.done = true;
-        app.summary.suspicious_duplicates.push((
-            SourcePath::new(PathBuf::from("a")),
-            DestPath::new(PathBuf::from("b")),
-        ));
-        terminal.draw(|f| ui(f, &app)).unwrap();
-        let buffer = terminal.backend().buffer();
-        let cell = &buffer[(0, 0)];
-        assert_eq!(cell.style().fg, Some(Color::Yellow));
-
-        // 4. Running state
-        let mut app = App::default();
-        app.done = false;
-        terminal.draw(|f| ui(f, &app)).unwrap();
-        let buffer = terminal.backend().buffer();
-        let cell = &buffer[(0, 0)];
-        assert_eq!(cell.style().fg, Some(Color::Cyan));
+            terminal.draw(|f| ui(f, &app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            // Check top-left corner (0,0) style.
+            let cell = &buffer[(0, 0)];
+            assert_eq!(
+                cell.style().fg,
+                Some(case.expected_color),
+                "Failed case: {}",
+                case.name
+            );
+        }
     }
 }
