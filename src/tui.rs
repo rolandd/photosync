@@ -230,11 +230,8 @@ impl App {
     }
 }
 
-fn ui(frame: &mut Frame, app: &App) {
-    let area = frame.area();
-
-    // Determine border color based on status
-    let border_color = if app.done {
+fn get_status_color(app: &App) -> Color {
+    if app.done {
         if app.summary.files_errored > 0 {
             Color::Red
         } else if !app.summary.suspicious_duplicates.is_empty()
@@ -246,13 +243,17 @@ fn ui(frame: &mut Frame, app: &App) {
         }
     } else {
         Color::Cyan
-    };
+    }
+}
+
+fn ui(frame: &mut Frame, app: &App) {
+    let area = frame.area();
 
     // Outer block
     let mut block = Block::default()
         .title(" Photosync ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(border_color));
+        .border_style(Style::default().fg(get_status_color(app)));
 
     if !app.done {
         block = block.title_bottom(
