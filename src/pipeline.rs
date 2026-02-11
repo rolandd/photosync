@@ -776,7 +776,8 @@ fn file_handler(
             report_error(&progress_tx, info.path.to_string(), "No filename in path");
             continue;
         };
-        let filename_str = paths::sanitize_str(&filename.to_string_lossy());
+        // Security: Use sanitize_filename to prevent invalid characters and Windows issues
+        let filename_str = paths::sanitize_filename(&filename.to_string_lossy());
         // Use sanitized filename for destination to prevent creating files with control characters
         let dest_path = dest_dir.join(&filename_str);
 
