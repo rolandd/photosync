@@ -84,6 +84,8 @@ pub struct App {
     // State
     done: bool,
     spinner_idx: usize,
+    start_time: Instant,
+    total_time: Option<Duration>,
 }
 
 impl App {
@@ -101,6 +103,8 @@ impl App {
             max_recent_items: size,
             done: false,
             spinner_idx: 0,
+            start_time: Instant::now(),
+            total_time: None,
         }
     }
 }
@@ -150,6 +154,10 @@ impl App {
     fn handle_message(&mut self, msg: ProgressMsg) {
         // Update common summary statistics; sets done flag on Done message
         self.done = self.summary.update(&msg);
+
+        if self.done && self.total_time.is_none() {
+            self.total_time = Some(self.start_time.elapsed());
+        }
 
         // Handle TUI-specific state
         match msg {
@@ -227,6 +235,19 @@ impl App {
             }
             _ => {}
         }
+    }
+}
+
+fn format_duration(d: Duration) -> String {
+    let seconds = d.as_secs();
+    let minutes = seconds / 60;
+    let seconds = seconds % 60;
+    let hours = minutes / 60;
+    let minutes = minutes % 60;
+    if hours > 0 {
+        format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+    } else {
+        format!("{:02}:{:02}", minutes, seconds)
     }
 }
 
@@ -361,8 +382,11 @@ fn ui(frame: &mut Frame, app: &App) {
     } else {
         "-".to_string()
     };
+    let elapsed = app.total_time.unwrap_or_else(|| app.start_time.elapsed());
+    let time_str = format_duration(elapsed);
     let stats_text = format!(
-        "Speed: {}    Copied: {}    Skipped: {} (already exist)",
+        "Time: {}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
+        time_str,
         speed_text,
         progress::format_bytes(app.summary.bytes_copied),
         app.summary.files_skipped
@@ -645,6 +669,31 @@ mod tests {
             }
         }
         assert!(found_spinner, "Spinner character not found in UI output");
+    }
+
+    #[test]
+    fn test_format_duration() {
+        assert_eq!(format_duration(Duration::from_secs(0)), "00:00");
+        assert_eq!(format_duration(Duration::from_secs(59)), "00:59");
+        assert_eq!(format_duration(Duration::from_secs(60)), "01:00");
+        assert_eq!(format_duration(Duration::from_secs(3599)), "59:59");
+        assert_eq!(format_duration(Duration::from_secs(3600)), "01:00:00");
+        assert_eq!(format_duration(Duration::from_secs(3661)), "01:01:01");
+    }
+
+    #[test]
+    fn test_app_tracks_total_time() {
+        let mut app = App::default();
+        assert!(app.total_time.is_none());
+
+        // Processing work doesn't set total_time
+        app.handle_message(ProgressMsg::FileFound);
+        assert!(app.total_time.is_none());
+
+        // Done sets total_time
+        app.handle_message(ProgressMsg::Done);
+        assert!(app.done);
+        assert!(app.total_time.is_some());
     }
 
     #[test]
