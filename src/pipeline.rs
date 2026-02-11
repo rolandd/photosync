@@ -6,7 +6,7 @@
 //! 3. **Handler**: Copies files to destination with deduplication
 
 use std::fs::{self, File};
-use std::io::{self, Read};
+use std::io::{self, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
@@ -570,6 +570,7 @@ mod tests {
         let file3 = create_test_file(dir.path(), "large3.bin", &different_content);
 
         // Reset f1 for next comparison or open again? compare_file rewinds it.
+        f1.seek(std::io::SeekFrom::Start(0)).unwrap();
         assert!(!comparator.compare_file(&mut f1, len, &file3).unwrap());
     }
 
