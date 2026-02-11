@@ -735,18 +735,94 @@ fn atomic_copy_file(reader: &mut File, dest: &Path, meta: &std::fs::Metadata) ->
         ));
     }
 
-    let mut writer = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(dest)?;
-    let len = io::copy(reader, &mut writer)?;
+    // Create a temporary file path in the same directory
+    let parent = dest
+        .parent()
+        .ok_or_else(|| io::Error::other("Invalid destination path"))?;
+    let file_name = dest
+        .file_name()
+        .ok_or_else(|| io::Error::other("Invalid destination filename"))?;
 
-    // Note: We do NOT copy permissions from the source file.
-    // For photos/archives, it's safer to rely on the user's umask and default file creation
-    // permissions (typically 0644 or 0600) rather than trusting metadata from the source
-    // filesystem (e.g. FAT/exFAT often reports 0777/0755).
+    // Use a randomized temp file name to avoid collisions and symlink attacks.
+    // We retry a few times in case of collision.
+    let pid = std::process::id();
+    for i in 0..3 {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos();
+        let temp_name = format!(
+            ".{}.{}.{}-{}.part",
+            file_name.to_string_lossy(),
+            pid,
+            nanos,
+            i
+        );
+        let temp_path = parent.join(temp_name);
 
-    Ok(len)
+        // Try to create the temp file securely (create_new=true prevents following symlinks)
+        let writer_result = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path);
+
+        match writer_result {
+            Ok(mut writer) => {
+                // Copy to temp file
+                let len = match io::copy(reader, &mut writer) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        let _ = fs::remove_file(&temp_path);
+                        return Err(e);
+                    }
+                };
+
+                // Note: We do NOT copy permissions from the source file.
+                // For photos/archives, it's safer to rely on the user's umask and default file creation
+                // permissions (typically 0644 or 0600) rather than trusting metadata from the source
+                // filesystem (e.g. FAT/exFAT often reports 0777/0755).
+
+                // Try atomic link
+                if let Err(link_err) = fs::hard_link(&temp_path, dest) {
+                    // Clean up temp file
+                    let _ = fs::remove_file(&temp_path);
+
+                    // Check if failure was due to destination existing
+                    if link_err.kind() == io::ErrorKind::AlreadyExists || dest.exists() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            "Destination already exists",
+                        ));
+                    }
+
+                    // Fallback: Hard links might not be supported (e.g. FAT32).
+                    // We must rewind the reader and try direct copy.
+                    // This sacrifices atomicity but preserves safety (no overwrite).
+                    io::Seek::seek(reader, io::SeekFrom::Start(0))?;
+
+                    let mut direct_writer = fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(dest)?;
+                    return io::copy(reader, &mut direct_writer);
+                }
+
+                // Success: remove temp file (it was hard linked)
+                let _ = fs::remove_file(&temp_path);
+                return Ok(len);
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                // Collision, retry loop
+                continue;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "Failed to create unique temporary file",
+    ))
 }
 
 /// Final handler for files with complete metadata.
