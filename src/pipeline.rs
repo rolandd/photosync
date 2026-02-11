@@ -6,7 +6,7 @@
 //! 3. **Handler**: Copies files to destination with deduplication
 
 use std::fs::{self, File};
-use std::io::{self, Read, Seek};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
@@ -393,7 +393,7 @@ fn compute_dest_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
+    use std::io::{Seek, Write};
     use std::path::Path;
 
     /// Helper to create a test file with given content.
