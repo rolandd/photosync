@@ -10,7 +10,7 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chrono::NaiveDate;
 use nom_exif::{ExifIter, ExifTag, MediaParser, MediaSource};
@@ -716,6 +716,39 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(err.to_string(), "Source is not a regular file");
     }
+
+    #[test]
+    fn test_atomic_copy_integrity() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("source.txt");
+        let dest = dir.path().join("dest.txt");
+
+        // Create source file
+        {
+            let mut file = File::create(&src).unwrap();
+            file.write_all(b"Important Data").unwrap();
+        }
+
+        // Test successful atomic copy
+        let mut file = File::open(&src).unwrap();
+        let meta = file.metadata().unwrap();
+        atomic_copy_file(&mut file, &dest, &meta).expect("atomic_copy_file failed");
+
+        assert!(dest.exists());
+        let content = fs::read(&dest).unwrap();
+        assert_eq!(content, b"Important Data");
+
+        // Test that it respects create_new (fails if exists)
+        file.seek(std::io::SeekFrom::Start(0)).unwrap();
+        let result = atomic_copy_file(&mut file, &dest, &meta);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+
+        // Ensure no temp files are left
+        let entries: Vec<_> = fs::read_dir(dir.path()).unwrap().collect();
+        // Should contain source and dest only
+        assert_eq!(entries.len(), 2);
+    }
 }
 
 /// Copies a file to a destination, failing if the destination already exists.
@@ -735,18 +768,73 @@ fn atomic_copy_file(reader: &mut File, dest: &Path, meta: &std::fs::Metadata) ->
         ));
     }
 
-    let mut writer = fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(dest)?;
-    let len = io::copy(reader, &mut writer)?;
+    // Use a temp file in the same directory to ensure we can hardlink/rename
+    let parent = dest
+        .parent()
+        .ok_or_else(|| io::Error::other("Invalid destination"))?;
 
-    // Note: We do NOT copy permissions from the source file.
-    // For photos/archives, it's safer to rely on the user's umask and default file creation
-    // permissions (typically 0644 or 0600) rather than trusting metadata from the source
-    // filesystem (e.g. FAT/exFAT often reports 0777/0755).
+    // Generate a unique temporary filename
+    let pid = std::process::id();
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let temp_filename = format!(
+        ".{}.{}.{}.part",
+        dest.file_name().unwrap().to_string_lossy(),
+        pid,
+        ts
+    );
+    let temp_path = parent.join(temp_filename);
 
-    Ok(len)
+    // Ensure cleanup of temp file in case of failure
+    let copy_result = (|| -> io::Result<u64> {
+        let mut writer = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)?;
+        let len = io::copy(reader, &mut writer)?;
+        // Explicitly drop writer to close file handle before linking
+        drop(writer);
+        Ok(len)
+    })();
+
+    match copy_result {
+        Ok(len) => {
+            // Atomic commit: Try hard_link first (Atomic Create)
+            match fs::hard_link(&temp_path, dest) {
+                Ok(_) => {
+                    let _ = fs::remove_file(&temp_path);
+                    Ok(len)
+                }
+                Err(_) => {
+                    // Fallback for FS that don't support hard links (e.g., FAT32)
+                    // Security: Verify destination doesn't exist to simulate create_new behavior
+                    if dest.exists() {
+                        let _ = fs::remove_file(&temp_path);
+                        return Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            "Destination already exists",
+                        ));
+                    }
+                    // Rename overwrites on POSIX but fails on Windows if exists.
+                    // We checked exists() above, but there's still a small TOCTOU window on POSIX.
+                    // This is an acceptable trade-off for FAT32 support compared to partial writes.
+                    match fs::rename(&temp_path, dest) {
+                        Ok(_) => Ok(len),
+                        Err(e) => {
+                            let _ = fs::remove_file(&temp_path);
+                            Err(e)
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            let _ = fs::remove_file(&temp_path);
+            Err(e)
+        }
+    }
 }
 
 /// Final handler for files with complete metadata.
