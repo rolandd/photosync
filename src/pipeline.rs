@@ -716,6 +716,78 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(err.to_string(), "Source is not a regular file");
     }
+
+    struct FailingReader {
+        data: Vec<u8>,
+        fail_at: usize,
+        cursor: usize,
+    }
+
+    impl FailingReader {
+        fn new(data: Vec<u8>, fail_at: usize) -> Self {
+            Self {
+                data,
+                fail_at,
+                cursor: 0,
+            }
+        }
+    }
+
+    impl Read for FailingReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.cursor >= self.fail_at {
+                return Err(io::Error::new(io::ErrorKind::Other, "Simulated failure"));
+            }
+            let end = std::cmp::min(self.cursor + buf.len(), self.fail_at);
+            let len = end - self.cursor;
+            // If we reached fail_at but have no data left to copy, fail immediately
+            if len == 0 {
+                return Err(io::Error::new(io::ErrorKind::Other, "Simulated failure"));
+            }
+            // Copy data
+            buf[..len].copy_from_slice(&self.data[self.cursor..end]);
+            self.cursor += len;
+            Ok(len)
+        }
+    }
+
+    #[test]
+    fn test_atomic_copy_integrity() {
+        let dir = tempfile::tempdir().unwrap();
+        // Create a dummy source file just to get valid metadata
+        let src_path = dir.path().join("dummy_source");
+        File::create(&src_path).unwrap();
+        let src_meta = fs::metadata(&src_path).unwrap();
+
+        let dest_path = dir.path().join("partial.bin");
+
+        // Data to copy
+        let data = b"Hello, world!".to_vec();
+        // Fail after 5 bytes
+        let mut reader = FailingReader::new(data, 5);
+
+        // Perform copy
+        let result = atomic_copy_file(&mut reader, &dest_path, &src_meta);
+
+        // Should fail
+        assert!(result.is_err(), "Copy should fail");
+
+        // Destination should NOT exist (no partial file)
+        assert!(
+            !dest_path.exists(),
+            "Destination file should not exist after failed copy"
+        );
+
+        // Ensure no temp files are left
+        // Since temp file name is random, we can just check if dir is empty (except dummy_source)
+        let entries: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect();
+        // Should only contain dummy_source
+        assert_eq!(entries.len(), 1, "Temp directory should be clean");
+        assert_eq!(entries[0], src_path);
+    }
 }
 
 /// Copies a file to a destination, failing if the destination already exists.
@@ -724,7 +796,11 @@ mod tests {
 ///
 /// **Note:** The caller must ensure that `reader` is at the beginning of the file (position 0)
 /// and that `meta` corresponds to the `reader` file handle.
-fn atomic_copy_file(reader: &mut File, dest: &Path, meta: &std::fs::Metadata) -> io::Result<u64> {
+fn atomic_copy_file<R: Read>(
+    reader: &mut R,
+    dest: &Path,
+    meta: &std::fs::Metadata,
+) -> io::Result<u64> {
     // Security check: ensure we are reading from a regular file, not a device/pipe/socket.
     // This mitigates DoS risks (reading infinite streams like /dev/zero) and blocking on pipes.
     // Uses fstat (cheap).
@@ -735,18 +811,82 @@ fn atomic_copy_file(reader: &mut File, dest: &Path, meta: &std::fs::Metadata) ->
         ));
     }
 
+    // Create a temporary file in the same directory as the destination
+    // to ensure we can use hard links (or at least rename on the same filesystem).
+    // Pattern: .<filename>.<pid>.<nanos>.part
+    let parent = dest.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Destination has no parent directory",
+        )
+    })?;
+    let file_name = dest.file_name().ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "Destination has no filename")
+    })?;
+
+    let pid = std::process::id();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+
+    let temp_name = format!(".{}.{}.{}.part", file_name.to_string_lossy(), pid, nanos);
+    let temp_path = parent.join(temp_name);
+
+    // Write to the temporary file
     let mut writer = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(dest)?;
-    let len = io::copy(reader, &mut writer)?;
+        .open(&temp_path)?;
 
-    // Note: We do NOT copy permissions from the source file.
-    // For photos/archives, it's safer to rely on the user's umask and default file creation
-    // permissions (typically 0644 or 0600) rather than trusting metadata from the source
-    // filesystem (e.g. FAT/exFAT often reports 0777/0755).
+    let result = io::copy(reader, &mut writer);
 
-    Ok(len)
+    match result {
+        Ok(len) => {
+            // Copy succeeded, now atomically link/move to destination
+
+            // Try hard link first (atomic, fails if dest exists)
+            match fs::hard_link(&temp_path, dest) {
+                Ok(_) => {
+                    // Success! Remove the temp file.
+                    let _ = fs::remove_file(&temp_path);
+                    Ok(len)
+                }
+                Err(e) => {
+                    // Hard link failed.
+                    // If it failed because dest exists, that's an error we want to propagate.
+                    if e.kind() == io::ErrorKind::AlreadyExists {
+                        let _ = fs::remove_file(&temp_path);
+                        return Err(e);
+                    }
+
+                    // Fallback: Check if dest exists, then Rename.
+                    // Note: This is less atomic than link() on some FS, but handles FAT32/exFAT cases.
+                    if dest.exists() {
+                        let _ = fs::remove_file(&temp_path);
+                        return Err(io::Error::new(
+                            io::ErrorKind::AlreadyExists,
+                            "Destination already exists",
+                        ));
+                    }
+
+                    // Try rename
+                    match fs::rename(&temp_path, dest) {
+                        Ok(_) => Ok(len),
+                        Err(rename_err) => {
+                            let _ = fs::remove_file(&temp_path);
+                            Err(rename_err)
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            // Copy failed, clean up temp file
+            let _ = fs::remove_file(&temp_path);
+            Err(e)
+        }
+    }
 }
 
 /// Final handler for files with complete metadata.
