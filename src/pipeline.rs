@@ -716,6 +716,37 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(err.to_string(), "Source is not a regular file");
     }
+
+    #[test]
+    fn test_atomic_copy_fails_if_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("source.bin");
+        let dest = dir.path().join("dest.bin");
+
+        // Create source file
+        {
+            let mut file = File::create(&src).unwrap();
+            file.write_all(b"source data").unwrap();
+        }
+
+        // Create destination file (content doesn't matter, just existence)
+        {
+            let mut file = File::create(&dest).unwrap();
+            file.write_all(b"existing data").unwrap();
+        }
+
+        let mut src_file = File::open(&src).unwrap();
+        let meta = src_file.metadata().unwrap();
+
+        // Attempt copy - should fail with AlreadyExists
+        let result = atomic_copy_file(&mut src_file, &dest, &meta);
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+
+        // Verify source file position is still 0 (unchanged)
+        assert_eq!(src_file.stream_position().unwrap(), 0);
+    }
 }
 
 /// Copies a file to a destination, failing if the destination already exists.
@@ -825,10 +856,14 @@ fn file_handler(
         }
         let size = src_meta.len();
 
-        if dest_path.exists() {
+        // Optimization: Try to copy first, and handle duplicates only if copy fails (AlreadyExists).
+        // This saves one stat syscall per file for new files.
+
+        // Shared duplicate handling logic
+        let mut handle_duplicate = |src_file: &mut File, dest_path: &Path| {
             // Check if contents are the same reusing src_file
             let is_same = comparator
-                .compare_file(&mut src_file, size, &dest_path)
+                .compare_file(src_file, size, dest_path)
                 .unwrap_or_else(|e| {
                     // Log error and assume different (safer)
                     report_error(
@@ -845,7 +880,7 @@ fn file_handler(
                     &progress_tx,
                     ProgressMsg::SuspiciousDuplicate {
                         src: info.path.clone(),
-                        dest: DestPath::new(dest_path.clone()),
+                        dest: DestPath::new(dest_path.to_path_buf()),
                     },
                 );
             }
@@ -853,29 +888,32 @@ fn file_handler(
             send_progress(
                 &progress_tx,
                 ProgressMsg::CopySkipped {
-                    filename: filename_str,
+                    filename: filename_str.clone(),
                 },
             );
-            continue;
-        }
+        };
 
         if dry_run {
-            send_progress(
-                &progress_tx,
-                ProgressMsg::CopyStarted {
-                    src: info.path.clone(),
-                    dest: DestPath::new(dest_path.clone()),
-                    size,
-                },
-            );
-            send_progress(
-                &progress_tx,
-                ProgressMsg::CopyComplete {
-                    filename: filename_str,
-                    size,
-                    duration: Duration::from_millis(1),
-                },
-            );
+            if dest_path.exists() {
+                handle_duplicate(&mut src_file, &dest_path);
+            } else {
+                send_progress(
+                    &progress_tx,
+                    ProgressMsg::CopyStarted {
+                        src: info.path.clone(),
+                        dest: DestPath::new(dest_path.clone()),
+                        size,
+                    },
+                );
+                send_progress(
+                    &progress_tx,
+                    ProgressMsg::CopyComplete {
+                        filename: filename_str,
+                        size,
+                        duration: Duration::from_millis(1),
+                    },
+                );
+            }
             continue;
         }
 
@@ -903,19 +941,24 @@ fn file_handler(
 
         let start = Instant::now();
         // Use atomic_copy_file with already open file
-        if let Err(e) = atomic_copy_file(&mut src_file, &dest_path, &src_meta) {
-            report_error(&progress_tx, filename_str, format!("Copy failed: {e}"));
-            continue;
+        match atomic_copy_file(&mut src_file, &dest_path, &src_meta) {
+            Ok(_) => {
+                let duration = start.elapsed();
+                send_progress(
+                    &progress_tx,
+                    ProgressMsg::CopyComplete {
+                        filename: filename_str,
+                        size,
+                        duration,
+                    },
+                );
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                handle_duplicate(&mut src_file, &dest_path);
+            }
+            Err(e) => {
+                report_error(&progress_tx, filename_str, format!("Copy failed: {e}"));
+            }
         }
-        let duration = start.elapsed();
-
-        send_progress(
-            &progress_tx,
-            ProgressMsg::CopyComplete {
-                filename: filename_str,
-                size,
-                duration,
-            },
-        );
     }
 }
