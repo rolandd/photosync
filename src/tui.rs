@@ -84,6 +84,8 @@ pub struct App {
     // State
     done: bool,
     spinner_idx: usize,
+    start_time: Instant,
+    total_time: Option<Duration>,
 }
 
 impl App {
@@ -101,6 +103,8 @@ impl App {
             max_recent_items: size,
             done: false,
             spinner_idx: 0,
+            start_time: Instant::now(),
+            total_time: None,
         }
     }
 }
@@ -225,8 +229,23 @@ impl App {
                     Style::default().fg(Color::Red),
                 );
             }
+            ProgressMsg::Done => {
+                self.total_time = Some(self.start_time.elapsed());
+            }
             _ => {}
         }
+    }
+}
+
+fn format_duration(d: Duration) -> String {
+    let secs = d.as_secs();
+    let hours = secs / 3600;
+    let mins = (secs % 3600) / 60;
+    let s = secs % 60;
+    if hours > 0 {
+        format!("{:02}:{:02}:{:02}", hours, mins, s)
+    } else {
+        format!("{:02}:{:02}", mins, s)
     }
 }
 
@@ -361,8 +380,10 @@ fn ui(frame: &mut Frame, app: &App) {
     } else {
         "-".to_string()
     };
+    let elapsed = app.total_time.unwrap_or_else(|| app.start_time.elapsed());
     let stats_text = format!(
-        "Speed: {}    Copied: {}    Skipped: {} (already exist)",
+        "Elapsed: {}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
+        format_duration(elapsed),
         speed_text,
         progress::format_bytes(app.summary.bytes_copied),
         app.summary.files_skipped
@@ -645,6 +666,33 @@ mod tests {
             }
         }
         assert!(found_spinner, "Spinner character not found in UI output");
+    }
+
+    #[test]
+    fn test_ui_elapsed_time() {
+        let mut app = App::default();
+        // Set start time to 65 seconds ago
+        app.start_time = Instant::now() - Duration::from_secs(65);
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|f| ui(f, &app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        // Search for "Elapsed: 01:05"
+        let mut found = false;
+        for y in 0..24 {
+            let mut row_text = String::new();
+            for x in 0..80 {
+                row_text.push_str(buffer[(x, y)].symbol());
+            }
+            if row_text.contains("Elapsed: 01:05") {
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "Elapsed time not found in UI");
     }
 
     #[test]
