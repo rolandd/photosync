@@ -84,6 +84,10 @@ pub struct App {
     // State
     done: bool,
     spinner_idx: usize,
+
+    // Timing
+    start_time: Instant,
+    total_time: Option<Duration>,
 }
 
 impl App {
@@ -101,6 +105,8 @@ impl App {
             max_recent_items: size,
             done: false,
             spinner_idx: 0,
+            start_time: Instant::now(),
+            total_time: None,
         }
     }
 }
@@ -225,8 +231,22 @@ impl App {
                     Style::default().fg(Color::Red),
                 );
             }
+            ProgressMsg::Done => {
+                self.total_time = Some(self.start_time.elapsed());
+            }
             _ => {}
         }
+    }
+}
+
+fn format_duration(d: Duration) -> String {
+    let seconds = d.as_secs();
+    let minutes = seconds / 60;
+    let hours = minutes / 60;
+    if hours > 0 {
+        format!("{:02}:{:02}:{:02}", hours, minutes % 60, seconds % 60)
+    } else {
+        format!("{:02}:{:02}", minutes, seconds % 60)
     }
 }
 
@@ -349,7 +369,11 @@ fn ui(frame: &mut Frame, app: &App) {
     let percentage = (progress_ratio * 100.0).min(100.0);
 
     let gauge = Gauge::default()
-        .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
+        .gauge_style(
+            Style::default()
+                .fg(get_status_color(app))
+                .bg(Color::DarkGray),
+        )
         .ratio(progress_ratio.min(1.0))
         .label(format!("{} / {} ({:.0}%)", processed, total, percentage));
     frame.render_widget(gauge, chunks[2]);
@@ -361,11 +385,13 @@ fn ui(frame: &mut Frame, app: &App) {
     } else {
         "-".to_string()
     };
+    let elapsed = app.total_time.unwrap_or_else(|| app.start_time.elapsed());
     let stats_text = format!(
-        "Speed: {}    Copied: {}    Skipped: {} (already exist)",
+        "Speed: {}    Copied: {}    Skipped: {} (already exist)    Elapsed: {}",
         speed_text,
         progress::format_bytes(app.summary.bytes_copied),
-        app.summary.files_skipped
+        app.summary.files_skipped,
+        format_duration(elapsed)
     );
     let stats_para = Paragraph::new(stats_text).style(Style::default().fg(Color::Gray));
     frame.render_widget(stats_para, chunks[3]);
@@ -479,6 +505,18 @@ mod tests {
         assert_eq!(app.summary.files_found, 0);
         assert_eq!(app.summary.files_copied, 0);
         assert!(!app.done);
+        assert!(app.total_time.is_none());
+    }
+
+    #[test]
+    fn test_format_duration() {
+        assert_eq!(format_duration(Duration::from_secs(0)), "00:00");
+        assert_eq!(format_duration(Duration::from_secs(59)), "00:59");
+        assert_eq!(format_duration(Duration::from_secs(60)), "01:00");
+        assert_eq!(format_duration(Duration::from_secs(61)), "01:01");
+        assert_eq!(format_duration(Duration::from_secs(3599)), "59:59");
+        assert_eq!(format_duration(Duration::from_secs(3600)), "01:00:00");
+        assert_eq!(format_duration(Duration::from_secs(3661)), "01:01:01");
     }
 
     #[test]
