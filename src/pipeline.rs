@@ -765,7 +765,10 @@ mod tests {
         // Verify no temp files left (should be source, dest, other)
         let entries = fs::read_dir(dir.path()).unwrap();
         let count = entries.count();
-        assert_eq!(count, 3, "Should have exactly 3 files (source, dest, other)");
+        assert_eq!(
+            count, 3,
+            "Should have exactly 3 files (source, dest, other)"
+        );
     }
 }
 
