@@ -10,7 +10,7 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use chrono::NaiveDate;
 use nom_exif::{ExifIter, ExifTag, MediaParser, MediaSource};
@@ -716,6 +716,57 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(err.to_string(), "Source is not a regular file");
     }
+
+    #[test]
+    fn test_atomic_copy_integrity() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("source.txt");
+        let dest = dir.path().join("dest.txt");
+
+        // Create source file
+        {
+            let mut file = File::create(&src).unwrap();
+            file.write_all(b"source content").unwrap();
+        }
+
+        // Test 1: Successful copy
+        {
+            let mut src_file = File::open(&src).unwrap();
+            let meta = src_file.metadata().unwrap();
+            atomic_copy_file(&mut src_file, &dest, &meta).unwrap();
+        }
+        assert!(dest.exists());
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "source content");
+
+        // Verify no temp files left
+        // Should contain only source.txt and dest.txt
+        let entries = fs::read_dir(dir.path()).unwrap();
+        let count = entries.count();
+        assert_eq!(count, 2, "Should have exactly 2 files (source and dest)");
+
+        // Test 2: Destination exists (should fail and not overwrite)
+        let other_src = dir.path().join("other.txt");
+        {
+            let mut file = File::create(&other_src).unwrap();
+            file.write_all(b"new content").unwrap();
+        }
+
+        {
+            let mut src_file = File::open(&other_src).unwrap();
+            let meta = src_file.metadata().unwrap();
+            let result = atomic_copy_file(&mut src_file, &dest, &meta);
+            assert!(result.is_err());
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+        }
+
+        // Verify dest content is unchanged
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "source content");
+
+        // Verify no temp files left (should be source, dest, other)
+        let entries = fs::read_dir(dir.path()).unwrap();
+        let count = entries.count();
+        assert_eq!(count, 3, "Should have exactly 3 files (source, dest, other)");
+    }
 }
 
 /// Copies a file to a destination, failing if the destination already exists.
@@ -735,18 +786,79 @@ fn atomic_copy_file(reader: &mut File, dest: &Path, meta: &std::fs::Metadata) ->
         ));
     }
 
+    let parent = dest.parent().unwrap_or(Path::new("."));
+    let filename = dest
+        .file_name()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid filename"))?;
+
+    // Generate a hidden temporary filename with high uniqueness to avoid collisions
+    // Pattern: .<filename>.<pid>.<nanos>.part
+    let pid = std::process::id();
+    let nanos = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .subsec_nanos();
+    let temp_name = format!(".{}.{}.{}.part", filename.to_string_lossy(), pid, nanos);
+    let temp_path = parent.join(temp_name);
+
+    // 1. Write to temporary file first (Atomicity Step 1)
+    // We use create_new(true) to ensure we don't accidentally overwrite an existing temp file
+    // (though highly unlikely with our naming scheme).
     let mut writer = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(dest)?;
-    let len = io::copy(reader, &mut writer)?;
+        .open(&temp_path)?;
 
-    // Note: We do NOT copy permissions from the source file.
-    // For photos/archives, it's safer to rely on the user's umask and default file creation
-    // permissions (typically 0644 or 0600) rather than trusting metadata from the source
-    // filesystem (e.g. FAT/exFAT often reports 0777/0755).
+    let copy_result = io::copy(reader, &mut writer);
 
-    Ok(len)
+    if let Err(e) = copy_result {
+        // Cleanup partial temp file on error
+        let _ = fs::remove_file(&temp_path);
+        return Err(e);
+    }
+    let len = copy_result.unwrap();
+
+    // Explicitly drop writer to close file handle before moving
+    drop(writer);
+
+    // 2. Atomically link/move to destination (Atomicity Step 2)
+    // We prefer hard_link because it guarantees we don't overwrite the destination if it exists
+    // (unlike rename on Unix, which silently replaces).
+    match fs::hard_link(&temp_path, dest) {
+        Ok(_) => {
+            // Success! Remove the temp file (which decreases link count to 1, leaving only dest)
+            let _ = fs::remove_file(&temp_path);
+            Ok(len)
+        }
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+            // Destination exists. Cleanup temp and fail.
+            let _ = fs::remove_file(&temp_path);
+            Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "Destination already exists",
+            ))
+        }
+        Err(_) => {
+            // Fallback for filesystems that don't support hard links (e.g. FAT32).
+            // We must manually check for existence to respect "never overwrite" policy.
+            if dest.exists() {
+                let _ = fs::remove_file(&temp_path);
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    "Destination already exists",
+                ));
+            }
+            // Try rename (Note: on Unix this overwrites if a file appeared in the tiny window
+            // since dest.exists(), but this TOCTOU risk is acceptable given FS limitations).
+            match fs::rename(&temp_path, dest) {
+                Ok(_) => Ok(len),
+                Err(e) => {
+                    let _ = fs::remove_file(&temp_path);
+                    Err(e)
+                }
+            }
+        }
+    }
 }
 
 /// Final handler for files with complete metadata.
