@@ -739,7 +739,16 @@ fn atomic_copy_file(reader: &mut File, dest: &Path, meta: &std::fs::Metadata) ->
         .write(true)
         .create_new(true)
         .open(dest)?;
-    let len = io::copy(reader, &mut writer)?;
+
+    let len = match io::copy(reader, &mut writer) {
+        Ok(len) => len,
+        Err(e) => {
+            // Best effort cleanup: remove the partial file if copy fails.
+            // We ignore errors from remove_file since we want to return the original copy error.
+            let _ = fs::remove_file(dest);
+            return Err(e);
+        }
+    };
 
     // Note: We do NOT copy permissions from the source file.
     // For photos/archives, it's safer to rely on the user's umask and default file creation
