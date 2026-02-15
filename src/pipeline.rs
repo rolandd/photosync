@@ -306,7 +306,7 @@ fn file_processor(
 }
 
 /// Result of computing a destination directory.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 enum DestDirResult {
     Ok(PathBuf),
     UnknownCamera,
@@ -760,9 +760,25 @@ fn file_handler(
 ) {
     let mut comparator = FileComparator::new();
     let mut last_dest_dir: Option<PathBuf> = None;
+    // Cache for compute_dest_dir to avoid redundant string allocations
+    let mut last_calc_key: Option<(String, NaiveDate)> = None;
+    let mut last_calc_res: Option<DestDirResult> = None;
 
     for info in rx {
-        let dest_dir = match compute_dest_dir(&target_dir, &config, &info.model, info.date) {
+        let key_matches = last_calc_key
+            .as_ref()
+            .is_some_and(|(m, d)| *m == info.model && *d == info.date);
+
+        let dest_dir_res = if key_matches {
+            last_calc_res.as_ref().unwrap().clone()
+        } else {
+            let res = compute_dest_dir(&target_dir, &config, &info.model, info.date);
+            last_calc_key = Some((info.model.clone(), info.date));
+            last_calc_res = Some(res.clone());
+            res
+        };
+
+        let dest_dir = match dest_dir_res {
             DestDirResult::Ok(path) => path,
             DestDirResult::UnknownCamera => {
                 send_progress(
