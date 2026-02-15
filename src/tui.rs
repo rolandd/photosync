@@ -231,16 +231,14 @@ impl App {
 }
 
 fn get_status_color(app: &App) -> Color {
-    if app.done {
-        if app.summary.files_errored > 0 {
-            Color::Red
-        } else if !app.summary.suspicious_duplicates.is_empty()
-            || !app.summary.unknown_cameras.is_empty()
-        {
-            Color::Yellow
-        } else {
-            Color::Green
-        }
+    if app.summary.files_errored > 0 {
+        Color::Red
+    } else if !app.summary.suspicious_duplicates.is_empty()
+        || !app.summary.unknown_cameras.is_empty()
+    {
+        Color::Yellow
+    } else if app.done {
+        Color::Green
     } else {
         Color::Cyan
     }
@@ -349,7 +347,11 @@ fn ui(frame: &mut Frame, app: &App) {
     let percentage = (progress_ratio * 100.0).min(100.0);
 
     let gauge = Gauge::default()
-        .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
+        .gauge_style(
+            Style::default()
+                .fg(get_status_color(app))
+                .bg(Color::DarkGray),
+        )
         .ratio(progress_ratio.min(1.0))
         .label(format!("{} / {} ({:.0}%)", processed, total, percentage));
     frame.render_widget(gauge, chunks[2]);
@@ -695,6 +697,22 @@ mod tests {
                 done: false,
                 setup: |_| {},
                 expected_color: Color::Cyan,
+            },
+            TestCase {
+                name: "Running state (error)",
+                done: false,
+                setup: |app| app.summary.files_errored = 1,
+                expected_color: Color::Red,
+            },
+            TestCase {
+                name: "Running state (warning)",
+                done: false,
+                setup: |app| {
+                    app.summary
+                        .unknown_cameras
+                        .insert("UnknownModel".to_string(), 1);
+                },
+                expected_color: Color::Yellow,
             },
         ];
 
