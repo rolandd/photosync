@@ -134,6 +134,26 @@ struct FileComparator {
     buf2: Vec<u8>,
 }
 
+/// RAII guard to cleanup temporary files.
+struct TempFileGuard {
+    path: PathBuf,
+}
+
+impl TempFileGuard {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        // Always try to remove the file on drop.
+        // If it was already renamed (moved), this will fail harmlessly (NotFound).
+        // If it was hard-linked, the original temp file still exists and should be removed.
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 impl FileComparator {
     fn new() -> Self {
         Self {
@@ -804,6 +824,9 @@ fn atomic_copy_file(reader: &mut File, dest: &Path, meta: &std::fs::Metadata) ->
     let temp_name = format!(".{}.{}.{}.part", filename.to_string_lossy(), pid, nanos);
     let temp_path = parent.join(temp_name);
 
+    // RAII guard ensures cleanup of the temporary file in all cases
+    let _guard = TempFileGuard::new(temp_path.clone());
+
     // 1. Write to temporary file first (Atomicity Step 1)
     // We use create_new(true) to ensure we don't accidentally overwrite an existing temp file
     // (though highly unlikely with our naming scheme).
@@ -812,14 +835,7 @@ fn atomic_copy_file(reader: &mut File, dest: &Path, meta: &std::fs::Metadata) ->
         .create_new(true)
         .open(&temp_path)?;
 
-    let copy_result = io::copy(reader, &mut writer);
-
-    if let Err(e) = copy_result {
-        // Cleanup partial temp file on error
-        let _ = fs::remove_file(&temp_path);
-        return Err(e);
-    }
-    let len = copy_result.unwrap();
+    let len = io::copy(reader, &mut writer)?;
 
     // Explicitly drop writer to close file handle before moving
     drop(writer);
@@ -828,24 +844,15 @@ fn atomic_copy_file(reader: &mut File, dest: &Path, meta: &std::fs::Metadata) ->
     // We prefer hard_link because it guarantees we don't overwrite the destination if it exists
     // (unlike rename on Unix, which silently replaces).
     match fs::hard_link(&temp_path, dest) {
-        Ok(_) => {
-            // Success! Remove the temp file (which decreases link count to 1, leaving only dest)
-            let _ = fs::remove_file(&temp_path);
-            Ok(len)
-        }
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-            // Destination exists. Cleanup temp and fail.
-            let _ = fs::remove_file(&temp_path);
-            Err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "Destination already exists",
-            ))
-        }
+        Ok(_) => Ok(len),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "Destination already exists",
+        )),
         Err(_) => {
             // Fallback for filesystems that don't support hard links (e.g. FAT32).
             // We must manually check for existence to respect "never overwrite" policy.
             if dest.exists() {
-                let _ = fs::remove_file(&temp_path);
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
                     "Destination already exists",
@@ -855,10 +862,7 @@ fn atomic_copy_file(reader: &mut File, dest: &Path, meta: &std::fs::Metadata) ->
             // since dest.exists(), but this TOCTOU risk is acceptable given FS limitations).
             match fs::rename(&temp_path, dest) {
                 Ok(_) => Ok(len),
-                Err(e) => {
-                    let _ = fs::remove_file(&temp_path);
-                    Err(e)
-                }
+                Err(e) => Err(e),
             }
         }
     }
