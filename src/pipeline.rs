@@ -8,6 +8,8 @@
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -39,6 +41,8 @@ pub struct FileInfo {
 /// 3. Handler: Copies files to the destination.
 /// 4. Monitor: Waits for all workers to finish and sends the Done signal.
 ///
+/// The `shutdown` flag can be set to `true` to request graceful shutdown of all workers.
+///
 /// Returns the `JoinHandle` of the monitor thread.
 pub fn spawn_pipeline(
     source_dir: PathBuf,
@@ -46,6 +50,7 @@ pub fn spawn_pipeline(
     config: Config,
     dry_run: bool,
     progress_tx: SyncSender<ProgressMsg>,
+    shutdown: Arc<AtomicBool>,
 ) -> thread::JoinHandle<()> {
     // Create pipeline channels
     let (walker_tx, processor_rx) = mpsc::sync_channel::<PathBuf>(CHANNEL_BUFFER_SIZE);
@@ -56,16 +61,32 @@ pub fn spawn_pipeline(
     let processor_progress = progress_tx.clone();
     let handler_progress = progress_tx.clone();
 
+    // Clone shutdown flag for each worker
+    let walker_shutdown = Arc::clone(&shutdown);
+    let processor_shutdown = Arc::clone(&shutdown);
+    let handler_shutdown = Arc::clone(&shutdown);
+
     // Spawn the producer thread (file walker)
     // Extract exclude_dirs to pass to walker
     let exclude_dirs = config.exclude_dirs.clone();
     let walker_handle = thread::spawn(move || {
-        file_walker(source_dir, exclude_dirs, walker_tx, walker_progress);
+        file_walker(
+            source_dir,
+            exclude_dirs,
+            walker_tx,
+            walker_progress,
+            walker_shutdown,
+        );
     });
 
     // Spawn the processor thread (EXIF extraction)
     let processor_handle = thread::spawn(move || {
-        file_processor(processor_rx, processor_tx, processor_progress);
+        file_processor(
+            processor_rx,
+            processor_tx,
+            processor_progress,
+            processor_shutdown,
+        );
     });
 
     // Spawn the handler thread (final processing)
@@ -78,6 +99,7 @@ pub fn spawn_pipeline(
             handler_config,
             dry_run,
             handler_progress,
+            handler_shutdown,
         );
     });
 
@@ -103,18 +125,24 @@ pub fn spawn_pipeline(
 }
 
 /// Helper to send progress messages, suppressing errors.
-fn send_progress(tx: &SyncSender<ProgressMsg>, msg: ProgressMsg) {
-    if let Err(_e) = tx.send(msg) {
-        #[cfg(debug_assertions)]
-        eprintln!("Warning: Failed to send progress message: {:?}", _e);
+/// Checks shutdown flag first to avoid blocking on a full channel during shutdown.
+/// If send fails (receiver dropped), sets shutdown flag to signal other workers.
+fn send_progress(tx: &SyncSender<ProgressMsg>, msg: ProgressMsg, shutdown: &AtomicBool) {
+    if shutdown.load(Ordering::Acquire) {
+        return;
+    }
+    if tx.send(msg).is_err() {
+        // Receiver is gone, signal all workers to stop
+        shutdown.store(true, Ordering::Release);
     }
 }
 
-/// Helper to report errors to the UI
+/// Helper to report errors to the UI.
 fn report_error(
     tx: &SyncSender<ProgressMsg>,
     filename: impl Into<String>,
     error: impl Into<String>,
+    shutdown: &AtomicBool,
 ) {
     send_progress(
         tx,
@@ -122,6 +150,7 @@ fn report_error(
             filename: filename.into(),
             error: error.into(),
         },
+        shutdown,
     );
 }
 
@@ -196,10 +225,12 @@ fn file_walker(
     exclude_dirs: Vec<String>,
     tx: SyncSender<PathBuf>,
     progress_tx: SyncSender<ProgressMsg>,
+    shutdown: Arc<AtomicBool>,
 ) {
     send_progress(
         &progress_tx,
         ProgressMsg::ScanningDir(SourcePath::new(source_dir.clone())),
+        &shutdown,
     );
 
     let walker = WalkDir::new(&source_dir)
@@ -211,11 +242,16 @@ fn file_walker(
         });
 
     for walk_entry in walker {
+        // Check shutdown flag at the start of each iteration
+        if shutdown.load(Ordering::Acquire) {
+            return;
+        }
+
         match walk_entry {
             Ok(entry) => {
                 if entry.file_type().is_file() {
                     let path = entry.into_path();
-                    send_progress(&progress_tx, ProgressMsg::FileFound);
+                    send_progress(&progress_tx, ProgressMsg::FileFound, &shutdown);
                     if tx.send(path).is_err() {
                         return;
                     }
@@ -229,12 +265,13 @@ fn file_walker(
                         path: SourcePath::new(path),
                         error: paths::sanitize_str(&e.to_string()),
                     },
+                    &shutdown,
                 );
             }
         }
     }
 
-    send_progress(&progress_tx, ProgressMsg::ScanComplete);
+    send_progress(&progress_tx, ProgressMsg::ScanComplete, &shutdown);
 }
 
 /// Processes file paths received from the channel.
@@ -242,10 +279,16 @@ fn file_processor(
     rx: Receiver<PathBuf>,
     tx: SyncSender<FileInfo>,
     progress_tx: SyncSender<ProgressMsg>,
+    shutdown: Arc<AtomicBool>,
 ) {
     let mut parser = MediaParser::new();
 
     for path in rx {
+        // Check shutdown flag at the start of each iteration
+        if shutdown.load(Ordering::Acquire) {
+            return;
+        }
+
         let Ok(ms) = MediaSource::file_path(&path) else {
             continue;
         };
@@ -292,6 +335,7 @@ fn file_processor(
                     path: SourcePath::new(path.clone()),
                     model: model.clone(),
                 },
+                &shutdown,
             );
             let file_info = FileInfo {
                 path: SourcePath::new(path),
@@ -616,10 +660,17 @@ mod tests {
         create_test_file(&ignore_dir, "bad.jpg", b"");
 
         let (tx, rx) = std::sync::mpsc::sync_channel(10);
-        let (progress_tx, _) = std::sync::mpsc::sync_channel(10);
+        let (progress_tx, _progress_rx) = std::sync::mpsc::sync_channel(10);
+        let shutdown = Arc::new(AtomicBool::new(false));
 
         // Run walker with "ignore" in exclude list
-        file_walker(src_dir, vec!["ignore".to_string()], tx, progress_tx);
+        file_walker(
+            src_dir,
+            vec!["ignore".to_string()],
+            tx,
+            progress_tx,
+            shutdown,
+        );
 
         // Collect results
         let mut paths = Vec::new();
@@ -757,12 +808,18 @@ fn file_handler(
     config: Config,
     dry_run: bool,
     progress_tx: SyncSender<ProgressMsg>,
+    shutdown: Arc<AtomicBool>,
 ) {
     let mut comparator = FileComparator::new();
     let mut last_dest_dir: Option<PathBuf> = None;
     let mut dest_cache: Option<(String, NaiveDate, DestDirResult)> = None;
 
     for info in rx {
+        // Check shutdown flag at the start of each iteration
+        if shutdown.load(Ordering::Acquire) {
+            return;
+        }
+
         // Performance optimization: Cache the destination directory result.
         // Files are often processed in sequence from the same camera/date.
         // This avoids re-running template substitution and string allocations.
@@ -788,17 +845,23 @@ fn file_handler(
                     ProgressMsg::UnknownCamera {
                         model: info.model.clone(),
                     },
+                    &shutdown,
                 );
                 continue;
             }
             DestDirResult::TemplateError(msg) => {
-                report_error(&progress_tx, info.path.to_string(), msg);
+                report_error(&progress_tx, info.path.to_string(), msg, &shutdown);
                 continue;
             }
         };
 
         let Some(filename) = info.path.file_name() else {
-            report_error(&progress_tx, info.path.to_string(), "No filename in path");
+            report_error(
+                &progress_tx,
+                info.path.to_string(),
+                "No filename in path",
+                &shutdown,
+            );
             continue;
         };
         // Security: Use sanitize_filename to prevent invalid characters and Windows issues
@@ -814,6 +877,7 @@ fn file_handler(
                     &progress_tx,
                     info.path.to_string(),
                     format!("Failed to open source: {e}"),
+                    &shutdown,
                 );
                 continue;
             }
@@ -827,6 +891,7 @@ fn file_handler(
                     &progress_tx,
                     info.path.to_string(),
                     format!("Failed to stat source: {e}"),
+                    &shutdown,
                 );
                 continue;
             }
@@ -838,13 +903,14 @@ fn file_handler(
                 &progress_tx,
                 info.path.to_string(),
                 "Source is not a regular file",
+                &shutdown,
             );
             continue;
         }
         let size = src_meta.len();
 
         // Helper to handle duplicate files
-        // We define it inside the loop to capture `info`, `filename_str`, `progress_tx`
+        // We define it inside the loop to capture `info`, `filename_str`, `progress_tx`, `shutdown`
         // but we need to pass `comparator` and `src_file` mutably.
         let handle_duplicate =
             |src_file: &mut File, dest_path: &Path, comparator: &mut FileComparator| {
@@ -855,6 +921,7 @@ fn file_handler(
                             &progress_tx,
                             filename_str.clone(),
                             format!("Error comparing files: {e}"),
+                            &shutdown,
                         );
                         false
                     });
@@ -866,6 +933,7 @@ fn file_handler(
                             src: info.path.clone(),
                             dest: DestPath::new(dest_path.to_path_buf()),
                         },
+                        &shutdown,
                     );
                 }
 
@@ -874,6 +942,7 @@ fn file_handler(
                     ProgressMsg::CopySkipped {
                         filename: filename_str.clone(),
                     },
+                    &shutdown,
                 );
             };
 
@@ -888,6 +957,7 @@ fn file_handler(
                         dest: DestPath::new(dest_path.clone()),
                         size,
                     },
+                    &shutdown,
                 );
                 send_progress(
                     &progress_tx,
@@ -896,6 +966,7 @@ fn file_handler(
                         size,
                         duration: Duration::from_millis(1),
                     },
+                    &shutdown,
                 );
             }
             continue;
@@ -908,6 +979,7 @@ fn file_handler(
                     &progress_tx,
                     filename_str,
                     format!("Failed to create directory: {e}"),
+                    &shutdown,
                 );
                 continue;
             }
@@ -921,6 +993,7 @@ fn file_handler(
                 dest: DestPath::new(dest_path.clone()),
                 size,
             },
+            &shutdown,
         );
 
         let start = Instant::now();
@@ -936,13 +1009,19 @@ fn file_handler(
                         size,
                         duration,
                     },
+                    &shutdown,
                 );
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                 handle_duplicate(&mut src_file, &dest_path, &mut comparator);
             }
             Err(e) => {
-                report_error(&progress_tx, filename_str, format!("Copy failed: {e}"));
+                report_error(
+                    &progress_tx,
+                    filename_str,
+                    format!("Copy failed: {e}"),
+                    &shutdown,
+                );
             }
         }
     }
