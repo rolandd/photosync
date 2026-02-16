@@ -240,10 +240,9 @@ impl App {
 
 fn format_duration(d: Duration) -> String {
     let total_seconds = d.as_secs();
-    let total_minutes = total_seconds / 60;
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
     let seconds = total_seconds % 60;
-    let hours = total_minutes / 60;
-    let minutes = total_minutes % 60;
     if hours > 0 {
         format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
     } else {
