@@ -239,11 +239,11 @@ impl App {
 }
 
 fn format_duration(d: Duration) -> String {
-    let seconds = d.as_secs();
-    let minutes = seconds / 60;
-    let seconds = seconds % 60;
-    let hours = minutes / 60;
-    let minutes = minutes % 60;
+    let total_seconds = d.as_secs();
+    let total_minutes = total_seconds / 60;
+    let seconds = total_seconds % 60;
+    let hours = total_minutes / 60;
+    let minutes = total_minutes % 60;
     if hours > 0 {
         format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
     } else {
