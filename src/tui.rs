@@ -231,16 +231,14 @@ impl App {
 }
 
 fn get_status_color(app: &App) -> Color {
-    if app.done {
-        if app.summary.files_errored > 0 {
-            Color::Red
-        } else if !app.summary.suspicious_duplicates.is_empty()
-            || !app.summary.unknown_cameras.is_empty()
-        {
-            Color::Yellow
-        } else {
-            Color::Green
-        }
+    if app.summary.files_errored > 0 {
+        Color::Red
+    } else if !app.summary.suspicious_duplicates.is_empty()
+        || !app.summary.unknown_cameras.is_empty()
+    {
+        Color::Yellow
+    } else if app.done {
+        Color::Green
     } else {
         Color::Cyan
     }
@@ -349,7 +347,11 @@ fn ui(frame: &mut Frame, app: &App) {
     let percentage = (progress_ratio * 100.0).min(100.0);
 
     let gauge = Gauge::default()
-        .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
+        .gauge_style(
+            Style::default()
+                .fg(get_status_color(app))
+                .bg(Color::DarkGray),
+        )
         .ratio(progress_ratio.min(1.0))
         .label(format!("{} / {} ({:.0}%)", processed, total, percentage));
     frame.render_widget(gauge, chunks[2]);
@@ -361,12 +363,15 @@ fn ui(frame: &mut Frame, app: &App) {
     } else {
         "-".to_string()
     };
-    let stats_text = format!(
+    let mut stats_text = format!(
         "Speed: {}    Copied: {}    Skipped: {} (already exist)",
         speed_text,
         progress::format_bytes(app.summary.bytes_copied),
         app.summary.files_skipped
     );
+    if app.summary.files_errored > 0 {
+        stats_text.push_str(&format!("    Errors: {}", app.summary.files_errored));
+    }
     let stats_para = Paragraph::new(stats_text).style(Style::default().fg(Color::Gray));
     frame.render_widget(stats_para, chunks[3]);
 
@@ -696,6 +701,23 @@ mod tests {
                 setup: |_| {},
                 expected_color: Color::Cyan,
             },
+            TestCase {
+                name: "Running state (files errored)",
+                done: false,
+                setup: |app| app.summary.files_errored = 1,
+                expected_color: Color::Red,
+            },
+            TestCase {
+                name: "Running state (suspicious duplicate)",
+                done: false,
+                setup: |app| {
+                    app.summary.suspicious_duplicates.push((
+                        SourcePath::new(PathBuf::from("a")),
+                        DestPath::new(PathBuf::from("b")),
+                    ));
+                },
+                expected_color: Color::Yellow,
+            },
         ];
 
         for case in cases {
@@ -716,5 +738,31 @@ mod tests {
                 case.name
             );
         }
+    }
+
+    #[test]
+    fn test_ui_stats_includes_errors() {
+        let mut app = App::default();
+        app.summary.files_errored = 5;
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|f| ui(f, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        // Convert buffer to string to search
+        let mut found = false;
+        for y in 0..24 {
+            let mut row_text = String::new();
+            for x in 0..100 {
+                row_text.push_str(buffer[(x, y)].symbol());
+            }
+            if row_text.contains("Errors: 5") {
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "Stats text should contain error count");
     }
 }
