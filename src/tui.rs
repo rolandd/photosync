@@ -11,6 +11,9 @@
 
 use std::collections::VecDeque;
 use std::io::stdout;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -23,7 +26,6 @@ use ratatui::{
     prelude::*,
     widgets::{Block, Borders, Gauge, List, ListItem, Paragraph},
 };
-use std::sync::mpsc::Receiver;
 
 use crate::paths::{DestPath, SourcePath};
 use crate::progress::{self, ProgressMsg, Summary};
@@ -55,6 +57,15 @@ impl Drop for TerminalGuard {
         // Best-effort cleanup; ignore errors since we may be panicking
         let _ = disable_raw_mode();
         let _ = stdout().execute(LeaveAlternateScreen);
+    }
+}
+
+/// RAII guard to ensure shutdown flag is set on any exit path (normal, error, or panic).
+struct ShutdownGuard(Arc<AtomicBool>);
+
+impl Drop for ShutdownGuard {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
     }
 }
 
@@ -422,15 +433,19 @@ fn ui(frame: &mut Frame, app: &App) {
 }
 
 /// Run the TUI, receiving progress messages until Done.
-pub fn run_tui(rx: Receiver<ProgressMsg>) -> Result<Summary> {
+///
+/// The `shutdown` flag is set to `true` when the TUI exits for any reason
+/// (user quit, completion, error, or panic), signaling background workers to stop.
+pub fn run_tui(rx: Receiver<ProgressMsg>, shutdown: Arc<AtomicBool>) -> Result<Summary> {
     // Setup terminal
     enable_raw_mode().context("Failed to enable raw mode")?;
     stdout()
         .execute(EnterAlternateScreen)
         .context("Failed to enter alternate screen")?;
 
-    // Guard ensures cleanup on panic or early return
-    let _guard = TerminalGuard;
+    // Guards ensure cleanup on panic or early return
+    let _terminal_guard = TerminalGuard;
+    let _shutdown_guard = ShutdownGuard(Arc::clone(&shutdown));
 
     let mut terminal =
         Terminal::new(CrosstermBackend::new(stdout())).context("Failed to create terminal")?;
@@ -449,6 +464,7 @@ pub fn run_tui(rx: Receiver<ProgressMsg>) -> Result<Summary> {
                 || (key.code == KeyCode::Char('c')
                     && key.modifiers.contains(event::KeyModifiers::CONTROL)))
         {
+            // ShutdownGuard will set the flag when we return
             break;
         }
 
@@ -484,8 +500,9 @@ pub fn run_tui(rx: Receiver<ProgressMsg>) -> Result<Summary> {
         }
     }
 
-    // Explicitly drop guard to restore terminal before returning
-    drop(_guard);
+    // Explicitly drop guards to restore terminal and signal shutdown before returning
+    drop(_terminal_guard);
+    drop(_shutdown_guard);
 
     Ok(app.summary)
 }

@@ -7,6 +7,8 @@
 //! extracts EXIF metadata, and copies files to `~/Pictures/<camera_dir>/YYYY/MM/DD/`.
 
 use std::io::IsTerminal;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
 
 use anyhow::{Context, Result};
@@ -75,18 +77,27 @@ fn main() -> Result<()> {
     // Note: if buffer is full, workers block.
     let (progress_tx, progress_rx) = mpsc::sync_channel::<ProgressMsg>(PROGRESS_BUFFER_SIZE);
 
+    // Shutdown flag for clean exit on Ctrl+C
+    let shutdown = Arc::new(AtomicBool::new(false));
+
     if !use_tui {
         eprintln!("Source: {}", source_dir.display());
         eprintln!("Target: {}", target_dir.display());
     }
 
     // Spawn the pipeline (walker, processor, handler, and monitor)
-    let monitor_handle =
-        pipeline::spawn_pipeline(source_dir, target_dir, config, dry_run, progress_tx);
+    let monitor_handle = pipeline::spawn_pipeline(
+        source_dir,
+        target_dir,
+        config,
+        dry_run,
+        progress_tx,
+        Arc::clone(&shutdown),
+    );
 
     // Run TUI or text mode
     let summary = if use_tui {
-        tui::run_tui(progress_rx).context("TUI error")?
+        tui::run_tui(progress_rx, shutdown).context("TUI error")?
     } else {
         text_mode::run_text_mode(progress_rx)
     };
