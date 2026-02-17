@@ -761,7 +761,10 @@ mod tests {
         assert_eq!(result.unwrap_err().to_string(), "Simulated failure");
 
         // Destination file should have been cleaned up
-        assert!(!dest_path.exists(), "Destination file should be deleted on failure");
+        assert!(
+            !dest_path.exists(),
+            "Destination file should be deleted on failure"
+        );
     }
 }
 
