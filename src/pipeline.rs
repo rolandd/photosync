@@ -6,7 +6,7 @@
 //! 3. **Handler**: Copies files to destination with deduplication
 
 use std::fs::{self, File};
-use std::io::{self, Read};
+use std::io::{self, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,6 +31,8 @@ pub struct FileInfo {
     pub path: SourcePath,
     pub model: String,
     pub date: NaiveDate,
+    /// Open file handle, reused to avoid double open.
+    pub file: Option<File>,
 }
 
 /// Spawns the processing pipeline threads.
@@ -289,46 +291,59 @@ fn file_processor(
             return;
         }
 
-        let Ok(ms) = MediaSource::file_path(&path) else {
-            continue;
+        let mut file = match File::open(&path) {
+            Ok(f) => f,
+            Err(e) => {
+                report_error(
+                    &progress_tx,
+                    path.to_string_lossy().to_string(),
+                    format!("Failed to open for EXIF processing: {e}"),
+                    &shutdown,
+                );
+                continue;
+            }
         };
 
-        if !ms.has_exif() {
-            continue;
-        }
+        // Use a closure to limit the scope of the borrow on `file` via `ms`.
+        // This allows us to move `file` into `FileInfo` after extraction.
+        let result = (|file: &mut File| {
+            let ms = MediaSource::seekable(file).ok()?;
 
-        let iter: ExifIter = match parser.parse(ms) {
-            Ok(iter) => iter,
-            Err(_) => continue,
-        };
+            if !ms.has_exif() {
+                return None;
+            }
 
-        let mut model = None;
-        let mut date = None;
+            let iter: ExifIter = parser.parse(ms).ok()?;
 
-        for mut entry in iter {
-            if let Some(tag) = entry.tag() {
-                match tag {
-                    ExifTag::Model => {
-                        model = entry
-                            .take_value()
-                            .and_then(|v| v.as_str().map(paths::sanitize_str));
+            let mut model = None;
+            let mut date = None;
+
+            for mut entry in iter {
+                if let Some(tag) = entry.tag() {
+                    match tag {
+                        ExifTag::Model => {
+                            model = entry
+                                .take_value()
+                                .and_then(|v| v.as_str().map(paths::sanitize_str));
+                        }
+                        ExifTag::DateTimeOriginal => {
+                            date = entry
+                                .take_value()
+                                .and_then(|v| v.as_time_components())
+                                .map(|(ndt, _offset)| ndt.date());
+                        }
+                        _ => {}
                     }
-                    ExifTag::DateTimeOriginal => {
-                        date = entry
-                            .take_value()
-                            .and_then(|v| v.as_time_components())
-                            .map(|(ndt, _offset)| ndt.date());
-                    }
-                    _ => {}
+                }
+
+                if model.is_some() && date.is_some() {
+                    break;
                 }
             }
+            model.zip(date)
+        })(&mut file);
 
-            if model.is_some() && date.is_some() {
-                break;
-            }
-        }
-
-        if let (Some(model), Some(date)) = (model, date) {
+        if let Some((model, date)) = result {
             send_progress(
                 &progress_tx,
                 ProgressMsg::ExifExtracted {
@@ -341,6 +356,7 @@ fn file_processor(
                 path: SourcePath::new(path),
                 model,
                 date,
+                file: Some(file),
             };
             if tx.send(file_info).is_err() {
                 return;
@@ -814,7 +830,7 @@ fn file_handler(
     let mut last_dest_dir: Option<PathBuf> = None;
     let mut dest_cache: Option<(String, NaiveDate, DestDirResult)> = None;
 
-    for info in rx {
+    for mut info in rx {
         // Check shutdown flag at the start of each iteration
         if shutdown.load(Ordering::Acquire) {
             return;
@@ -870,16 +886,30 @@ fn file_handler(
         let dest_path = dest_dir.join(&filename_str);
 
         // Open source file early to reuse handle and avoid double open/stat
-        let mut src_file = match File::open(&info.path) {
-            Ok(f) => f,
-            Err(e) => {
+        // Optimization: Reuse the file handle from the processor if available
+        let mut src_file = if let Some(mut f) = info.file.take() {
+            if let Err(e) = f.seek(io::SeekFrom::Start(0)) {
                 report_error(
                     &progress_tx,
                     info.path.to_string(),
-                    format!("Failed to open source: {e}"),
+                    format!("Failed to rewind source: {e}"),
                     &shutdown,
                 );
                 continue;
+            }
+            f
+        } else {
+            match File::open(&info.path) {
+                Ok(f) => f,
+                Err(e) => {
+                    report_error(
+                        &progress_tx,
+                        info.path.to_string(),
+                        format!("Failed to open source: {e}"),
+                        &shutdown,
+                    );
+                    continue;
+                }
             }
         };
 
@@ -914,6 +944,19 @@ fn file_handler(
         // but we need to pass `comparator` and `src_file` mutably.
         let handle_duplicate =
             |src_file: &mut File, dest_path: &Path, comparator: &mut FileComparator| {
+                // Ensure we are comparing from the start of the file.
+                // If atomic_copy_file advanced the cursor (e.g. partial write), we must rewind.
+                // If it failed at OpenOptions, cursor is already at 0, but rewind is safe/cheap.
+                if let Err(e) = src_file.seek(io::SeekFrom::Start(0)) {
+                    report_error(
+                        &progress_tx,
+                        filename_str.clone(),
+                        format!("Failed to rewind source for comparison: {e}"),
+                        &shutdown,
+                    );
+                    return;
+                }
+
                 let is_same = comparator
                     .compare_file(src_file, size, dest_path)
                     .unwrap_or_else(|e| {
