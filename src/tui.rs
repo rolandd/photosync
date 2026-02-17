@@ -251,16 +251,14 @@ fn format_duration(d: Duration) -> String {
 }
 
 fn get_status_color(app: &App) -> Color {
-    if app.done {
-        if app.summary.files_errored > 0 {
-            Color::Red
-        } else if !app.summary.suspicious_duplicates.is_empty()
-            || !app.summary.unknown_cameras.is_empty()
-        {
-            Color::Yellow
-        } else {
-            Color::Green
-        }
+    if app.summary.files_errored > 0 {
+        Color::Red
+    } else if !app.summary.suspicious_duplicates.is_empty()
+        || !app.summary.unknown_cameras.is_empty()
+    {
+        Color::Yellow
+    } else if app.done {
+        Color::Green
     } else {
         Color::Cyan
     }
@@ -342,7 +340,8 @@ fn ui(frame: &mut Frame, app: &App) {
             .map(|n| crate::paths::sanitize_str(&n.to_string_lossy()))
             .unwrap_or_default();
         format!(
-            "Copying: {} ({})\nTo: {}",
+            "{} Copying: {} ({})\nTo: {}",
+            app.spinner(),
             filename,
             progress::format_bytes(*size),
             dest
@@ -369,7 +368,11 @@ fn ui(frame: &mut Frame, app: &App) {
     let percentage = (progress_ratio * 100.0).min(100.0);
 
     let gauge = Gauge::default()
-        .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
+        .gauge_style(
+            Style::default()
+                .fg(get_status_color(app))
+                .bg(Color::DarkGray),
+        )
         .ratio(progress_ratio.min(1.0))
         .label(format!("{} / {} ({:.0}%)", processed, total, percentage));
     frame.render_widget(gauge, chunks[2]);
@@ -671,6 +674,38 @@ mod tests {
     }
 
     #[test]
+    fn test_ui_spinner_copying() {
+        let mut app = App::default();
+        app.current_file = Some((
+            crate::paths::SourcePath::new(PathBuf::from("src.jpg")),
+            crate::paths::DestPath::new(PathBuf::from("dest.jpg")),
+            1024,
+        ));
+        app.tick(); // ensure index > 0 for visibility
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| ui(f, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        let mut found = false;
+        let spinner_char = SPINNER[app.spinner_idx];
+        let expected = format!("{} Copying: src.jpg", spinner_char);
+
+        for y in 0..24 {
+            let mut row_text = String::new();
+            for x in 0..80 {
+                row_text.push_str(buffer[(x, y)].symbol());
+            }
+            if row_text.contains(&expected) {
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "Spinner not found in copying text");
+    }
+
+    #[test]
     fn test_format_duration() {
         assert_eq!(format_duration(Duration::from_secs(0)), "00:00");
         assert_eq!(format_duration(Duration::from_secs(59)), "00:59");
@@ -743,6 +778,12 @@ mod tests {
                 done: false,
                 setup: |_| {},
                 expected_color: Color::Cyan,
+            },
+            TestCase {
+                name: "Running state with error",
+                done: false,
+                setup: |app| app.summary.files_errored = 1,
+                expected_color: Color::Red,
             },
         ];
 
