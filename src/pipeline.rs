@@ -10,7 +10,7 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use chrono::NaiveDate;
 use nom_exif::{ExifIter, ExifTag, MediaParser, MediaSource};
@@ -326,7 +326,7 @@ fn file_processor(
 }
 
 /// Result of computing a destination directory.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 enum DestDirResult {
     Ok(PathBuf),
     UnknownCamera,
@@ -815,13 +815,9 @@ fn atomic_copy_file(reader: &mut File, dest: &Path, meta: &std::fs::Metadata) ->
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid filename"))?;
 
     // Generate a hidden temporary filename with high uniqueness to avoid collisions
-    // Pattern: .<filename>.<pid>.<nanos>.part
-    let pid = std::process::id();
-    let nanos = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .subsec_nanos();
-    let temp_name = format!(".{}.{}.{}.part", filename.to_string_lossy(), pid, nanos);
+    // Pattern: .<filename>.<random>.part
+    let random_suffix = fastrand::u64(..);
+    let temp_name = format!(".{}.{:016x}.part", filename.to_string_lossy(), random_suffix);
     let temp_path = parent.join(temp_name);
 
     // RAII guard ensures cleanup of the temporary file in all cases
@@ -843,6 +839,9 @@ fn atomic_copy_file(reader: &mut File, dest: &Path, meta: &std::fs::Metadata) ->
     // 2. Atomically link/move to destination (Atomicity Step 2)
     // We prefer hard_link because it guarantees we don't overwrite the destination if it exists
     // (unlike rename on Unix, which silently replaces).
+    // Note: We fallback to rename for non-link-supporting filesystems (e.g. FAT32).
+    // While rename on Unix can overwrite, we explicitly check existence first.
+    // Any race condition in the fallback path is acceptable given the filesystem limitations.
     match fs::hard_link(&temp_path, dest) {
         Ok(_) => Ok(len),
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(io::Error::new(
@@ -879,9 +878,27 @@ fn file_handler(
 ) {
     let mut comparator = FileComparator::new();
     let mut last_dest_dir: Option<PathBuf> = None;
+    let mut dest_cache: Option<(String, NaiveDate, DestDirResult)> = None;
 
     for info in rx {
-        let dest_dir = match compute_dest_dir(&target_dir, &config, &info.model, info.date) {
+        // Performance optimization: Cache the destination directory result.
+        // Files are often processed in sequence from the same camera/date.
+        // This avoids re-running template substitution and string allocations.
+        let dest_result = if let Some((ref m, d, ref r)) = dest_cache {
+            if m == &info.model && d == info.date {
+                r.clone()
+            } else {
+                let r = compute_dest_dir(&target_dir, &config, &info.model, info.date);
+                dest_cache = Some((info.model.clone(), info.date, r.clone()));
+                r
+            }
+        } else {
+            let r = compute_dest_dir(&target_dir, &config, &info.model, info.date);
+            dest_cache = Some((info.model.clone(), info.date, r.clone()));
+            r
+        };
+
+        let dest_dir = match dest_result {
             DestDirResult::Ok(path) => path,
             DestDirResult::UnknownCamera => {
                 send_progress(
@@ -944,57 +961,61 @@ fn file_handler(
         }
         let size = src_meta.len();
 
-        if dest_path.exists() {
-            // Check if contents are the same reusing src_file
-            let is_same = comparator
-                .compare_file(&mut src_file, size, &dest_path)
-                .unwrap_or_else(|e| {
-                    // Log error and assume different (safer)
-                    report_error(
-                        &progress_tx,
-                        filename_str.clone(),
-                        format!("Error comparing files: {e}"),
-                    );
-                    false
-                });
+        // Helper to handle duplicate files
+        // We define it inside the loop to capture `info`, `filename_str`, `progress_tx`
+        // but we need to pass `comparator` and `src_file` mutably.
+        let handle_duplicate =
+            |src_file: &mut File, dest_path: &Path, comparator: &mut FileComparator| {
+                let is_same = comparator
+                    .compare_file(src_file, size, dest_path)
+                    .unwrap_or_else(|e| {
+                        report_error(
+                            &progress_tx,
+                            filename_str.clone(),
+                            format!("Error comparing files: {e}"),
+                        );
+                        false
+                    });
 
-            if !is_same {
-                // Suspicious: same name but different contents
+                if !is_same {
+                    send_progress(
+                        &progress_tx,
+                        ProgressMsg::SuspiciousDuplicate {
+                            src: info.path.clone(),
+                            dest: DestPath::new(dest_path.to_path_buf()),
+                        },
+                    );
+                }
+
                 send_progress(
                     &progress_tx,
-                    ProgressMsg::SuspiciousDuplicate {
+                    ProgressMsg::CopySkipped {
+                        filename: filename_str.clone(),
+                    },
+                );
+            };
+
+        if dry_run {
+            if dest_path.exists() {
+                handle_duplicate(&mut src_file, &dest_path, &mut comparator);
+            } else {
+                send_progress(
+                    &progress_tx,
+                    ProgressMsg::CopyStarted {
                         src: info.path.clone(),
                         dest: DestPath::new(dest_path.clone()),
+                        size,
+                    },
+                );
+                send_progress(
+                    &progress_tx,
+                    ProgressMsg::CopyComplete {
+                        filename: filename_str,
+                        size,
+                        duration: Duration::from_millis(1),
                     },
                 );
             }
-
-            send_progress(
-                &progress_tx,
-                ProgressMsg::CopySkipped {
-                    filename: filename_str,
-                },
-            );
-            continue;
-        }
-
-        if dry_run {
-            send_progress(
-                &progress_tx,
-                ProgressMsg::CopyStarted {
-                    src: info.path.clone(),
-                    dest: DestPath::new(dest_path.clone()),
-                    size,
-                },
-            );
-            send_progress(
-                &progress_tx,
-                ProgressMsg::CopyComplete {
-                    filename: filename_str,
-                    size,
-                    duration: Duration::from_millis(1),
-                },
-            );
             continue;
         }
 
@@ -1021,20 +1042,26 @@ fn file_handler(
         );
 
         let start = Instant::now();
-        // Use atomic_copy_file with already open file
-        if let Err(e) = atomic_copy_file(&mut src_file, &dest_path, &src_meta) {
-            report_error(&progress_tx, filename_str, format!("Copy failed: {e}"));
-            continue;
+        // Optimization: Try to copy first. atomic_copy_file fails with AlreadyExists if dest exists.
+        // This saves a redundant `stat` call in the common case (new files).
+        match atomic_copy_file(&mut src_file, &dest_path, &src_meta) {
+            Ok(_) => {
+                let duration = start.elapsed();
+                send_progress(
+                    &progress_tx,
+                    ProgressMsg::CopyComplete {
+                        filename: filename_str,
+                        size,
+                        duration,
+                    },
+                );
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                handle_duplicate(&mut src_file, &dest_path, &mut comparator);
+            }
+            Err(e) => {
+                report_error(&progress_tx, filename_str, format!("Copy failed: {e}"));
+            }
         }
-        let duration = start.elapsed();
-
-        send_progress(
-            &progress_tx,
-            ProgressMsg::CopyComplete {
-                filename: filename_str,
-                size,
-                duration,
-            },
-        );
     }
 }

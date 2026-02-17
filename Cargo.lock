@@ -1086,6 +1086,7 @@ dependencies = [
  "clap",
  "crossterm",
  "dirs",
+ "fastrand",
  "nom-exif",
  "ratatui",
  "serde",
