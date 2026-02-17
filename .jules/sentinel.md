@@ -12,3 +12,8 @@
 **Vulnerability:** Filenames and EXIF data containing ANSI escape codes or control characters were displayed raw in the TUI and text logs, allowing potential terminal manipulation.
 **Learning:** `Path::display()` does not sanitize control characters. It only escapes invalid UTF-8 (using replacement characters), but valid UTF-8 control codes are passed through.
 **Prevention:** Always sanitize user-controlled strings (filenames, metadata) before displaying them in a terminal. Use a helper function to replace control characters with a safe placeholder (like `?`).
+
+## 2026-02-04 - Partial File Corruption on Copy Failure
+**Vulnerability:** `atomic_copy_file` used `create_new(true)` to avoid overwriting, but if the subsequent `io::copy` failed (e.g., disk full), it left a partially written file at the destination. This corrupted state prevented future syncs (as the file appeared to exist) and could lead to data loss perception.
+**Learning:** Atomic file creation is not enough; the entire copy operation must be atomic. If an operation fails mid-way, it must rollback its side effects (delete the incomplete file).
+**Prevention:** Implement a try-catch-cleanup pattern for file operations: if the operation returns an error, catch it, perform cleanup (remove the file), and then propagate the error. "Fail securely" means leaving the system in a consistent state.
