@@ -6,7 +6,7 @@
 //! 3. **Handler**: Copies files to destination with deduplication
 
 use std::fs::{self, File};
-use std::io::{self, Read};
+use std::io::{self, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,7 +23,7 @@ use crate::paths::{self, DestPath, SourcePath};
 use crate::progress::ProgressMsg;
 
 /// Channel buffer size for pipeline stages.
-const CHANNEL_BUFFER_SIZE: usize = 1024;
+const CHANNEL_BUFFER_SIZE: usize = 256;
 
 /// Represents a file with complete EXIF metadata.
 #[derive(Debug)]
@@ -31,6 +31,8 @@ pub struct FileInfo {
     pub path: SourcePath,
     pub model: String,
     pub date: NaiveDate,
+    /// Open file handle, reused to avoid double open.
+    pub file: Option<File>,
 }
 
 /// Spawns the processing pipeline threads.
@@ -274,6 +276,34 @@ fn file_walker(
     send_progress(&progress_tx, ProgressMsg::ScanComplete, &shutdown);
 }
 
+/// Checks if an I/O error is due to too many open files.
+/// This checks for EMFILE (24) and ENFILE (23) on Unix-like systems,
+/// and ERROR_TOO_MANY_OPEN_FILES (4) on Windows.
+fn is_too_many_open_files(err: &std::io::Error) -> bool {
+    if let Some(os_err) = err.raw_os_error() {
+        #[cfg(unix)]
+        {
+            // MFILE (EMFILE) is too many open files for the process.
+            // NFILE (ENFILE) is too many open files for the system.
+            os_err == rustix::io::Errno::MFILE.raw_os_error()
+                || os_err == rustix::io::Errno::NFILE.raw_os_error()
+        }
+        #[cfg(windows)]
+        {
+            // Windows error code for "Too many open files"
+            // Reference: https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes--0-499-
+            const ERROR_TOO_MANY_OPEN_FILES: i32 = 4;
+            os_err == ERROR_TOO_MANY_OPEN_FILES
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            false
+        }
+    } else {
+        false
+    }
+}
+
 /// Processes file paths received from the channel.
 fn file_processor(
     rx: Receiver<PathBuf>,
@@ -283,52 +313,71 @@ fn file_processor(
 ) {
     let mut parser = MediaParser::new();
 
-    for path in rx {
-        // Check shutdown flag at the start of each iteration
-        if shutdown.load(Ordering::Acquire) {
-            return;
-        }
+    'path_loop: for path in rx {
+        let mut file = loop {
+            if shutdown.load(Ordering::Acquire) {
+                return;
+            }
 
-        let Ok(ms) = MediaSource::file_path(&path) else {
-            continue;
-        };
-
-        if !ms.has_exif() {
-            continue;
-        }
-
-        let iter: ExifIter = match parser.parse(ms) {
-            Ok(iter) => iter,
-            Err(_) => continue,
-        };
-
-        let mut model = None;
-        let mut date = None;
-
-        for mut entry in iter {
-            if let Some(tag) = entry.tag() {
-                match tag {
-                    ExifTag::Model => {
-                        model = entry
-                            .take_value()
-                            .and_then(|v| v.as_str().map(paths::sanitize_str));
+            match File::open(&path) {
+                Ok(f) => break f,
+                Err(e) => {
+                    if is_too_many_open_files(&e) {
+                        // Back-pressure: wait for the handler to free up file descriptors
+                        thread::sleep(Duration::from_millis(50));
+                        continue;
                     }
-                    ExifTag::DateTimeOriginal => {
-                        date = entry
-                            .take_value()
-                            .and_then(|v| v.as_time_components())
-                            .map(|(ndt, _offset)| ndt.date());
-                    }
-                    _ => {}
+                    report_error(
+                        &progress_tx,
+                        path.to_string_lossy().to_string(),
+                        format!("Failed to open for EXIF processing: {e}"),
+                        &shutdown,
+                    );
+                    continue 'path_loop;
                 }
             }
+        };
 
-            if model.is_some() && date.is_some() {
-                break;
+        // Use a closure to limit the scope of the borrow on `file` via `ms`.
+        // This allows us to move `file` into `FileInfo` after extraction.
+        let result = (|file: &mut File| {
+            let ms = MediaSource::seekable(file).ok()?;
+
+            if !ms.has_exif() {
+                return None;
             }
-        }
 
-        if let (Some(model), Some(date)) = (model, date) {
+            let iter: ExifIter = parser.parse(ms).ok()?;
+
+            let mut model = None;
+            let mut date = None;
+
+            for mut entry in iter {
+                if let Some(tag) = entry.tag() {
+                    match tag {
+                        ExifTag::Model => {
+                            model = entry
+                                .take_value()
+                                .and_then(|v| v.as_str().map(paths::sanitize_str));
+                        }
+                        ExifTag::DateTimeOriginal => {
+                            date = entry
+                                .take_value()
+                                .and_then(|v| v.as_time_components())
+                                .map(|(ndt, _offset)| ndt.date());
+                        }
+                        _ => {}
+                    }
+                }
+
+                if model.is_some() && date.is_some() {
+                    break;
+                }
+            }
+            model.zip(date)
+        })(&mut file);
+
+        if let Some((model, date)) = result {
             send_progress(
                 &progress_tx,
                 ProgressMsg::ExifExtracted {
@@ -341,6 +390,7 @@ fn file_processor(
                 path: SourcePath::new(path),
                 model,
                 date,
+                file: Some(file),
             };
             if tx.send(file_info).is_err() {
                 return;
@@ -875,7 +925,7 @@ fn file_handler(
     let mut last_dest_dir: Option<PathBuf> = None;
     let mut dest_cache: Option<(String, NaiveDate, DestDirResult)> = None;
 
-    for info in rx {
+    for mut info in rx {
         // Check shutdown flag at the start of each iteration
         if shutdown.load(Ordering::Acquire) {
             return;
@@ -931,16 +981,30 @@ fn file_handler(
         let dest_path = dest_dir.join(&filename_str);
 
         // Open source file early to reuse handle and avoid double open/stat
-        let mut src_file = match File::open(&info.path) {
-            Ok(f) => f,
-            Err(e) => {
+        // Optimization: Reuse the file handle from the processor if available
+        let mut src_file = if let Some(mut f) = info.file.take() {
+            if let Err(e) = f.seek(io::SeekFrom::Start(0)) {
                 report_error(
                     &progress_tx,
                     info.path.to_string(),
-                    format!("Failed to open source: {e}"),
+                    format!("Failed to rewind source: {e}"),
                     &shutdown,
                 );
                 continue;
+            }
+            f
+        } else {
+            match File::open(&info.path) {
+                Ok(f) => f,
+                Err(e) => {
+                    report_error(
+                        &progress_tx,
+                        info.path.to_string(),
+                        format!("Failed to open source: {e}"),
+                        &shutdown,
+                    );
+                    continue;
+                }
             }
         };
 
