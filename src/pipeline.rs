@@ -140,15 +140,15 @@ fn send_progress(tx: &SyncSender<ProgressMsg>, msg: ProgressMsg, shutdown: &Atom
 /// Helper to report errors to the UI.
 fn report_error(
     tx: &SyncSender<ProgressMsg>,
-    filename: impl Into<String>,
-    error: impl Into<String>,
+    filename: impl AsRef<str>,
+    error: impl AsRef<str>,
     shutdown: &AtomicBool,
 ) {
     send_progress(
         tx,
         ProgressMsg::CopyError {
-            filename: filename.into(),
-            error: error.into(),
+            filename: paths::sanitize_str(filename.as_ref()),
+            error: paths::sanitize_str(error.as_ref()),
         },
         shutdown,
     );
@@ -766,6 +766,22 @@ mod tests {
         let err = result.unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(err.to_string(), "Source is not a regular file");
+    }
+
+    #[test]
+    fn test_report_error_sanitizes_input() {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let shutdown = Arc::new(AtomicBool::new(false));
+
+        report_error(&tx, "file\nname.jpg", "error\tmessage", &shutdown);
+
+        let msg = rx.recv().unwrap();
+        if let ProgressMsg::CopyError { filename, error } = msg {
+            assert_eq!(filename, "file?name.jpg");
+            assert_eq!(error, "error?message");
+        } else {
+            panic!("Expected CopyError");
+        }
     }
 }
 
