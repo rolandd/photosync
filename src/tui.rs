@@ -327,7 +327,8 @@ fn ui(frame: &mut Frame, app: &App) {
     let scan_text = if app.scan_complete {
         format!(
             "Scan complete.  Files found: {}    With EXIF: {}",
-            app.summary.files_found, app.files_with_exif
+            progress::format_number(app.summary.files_found),
+            progress::format_number(app.files_with_exif)
         )
     } else {
         let dir = app
@@ -339,8 +340,8 @@ fn ui(frame: &mut Frame, app: &App) {
             "{} Scanning: {}  Files: {}  EXIF: {}",
             app.spinner(),
             dir,
-            app.summary.files_found,
-            app.files_with_exif
+            progress::format_number(app.summary.files_found),
+            progress::format_number(app.files_with_exif)
         )
     };
     let scan_para = Paragraph::new(scan_text).style(Style::default().fg(Color::White));
@@ -382,7 +383,12 @@ fn ui(frame: &mut Frame, app: &App) {
     let gauge = Gauge::default()
         .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
         .ratio(progress_ratio.min(1.0))
-        .label(format!("{} / {} ({:.0}%)", processed, total, percentage));
+        .label(format!(
+            "{} / {} ({:.0}%)",
+            progress::format_number(processed),
+            progress::format_number(total),
+            percentage
+        ));
     frame.render_widget(gauge, chunks[2]);
 
     // Speed and stats
@@ -399,7 +405,7 @@ fn ui(frame: &mut Frame, app: &App) {
         time_str,
         speed_text,
         progress::format_bytes(app.summary.bytes_copied),
-        app.summary.files_skipped
+        progress::format_number(app.summary.files_skipped)
     );
     let stats_para = Paragraph::new(stats_text).style(Style::default().fg(Color::Gray));
     frame.render_widget(stats_para, chunks[3]);
