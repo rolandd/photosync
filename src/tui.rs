@@ -394,9 +394,29 @@ fn ui(frame: &mut Frame, app: &App) {
     };
     let elapsed = app.total_time.unwrap_or_else(|| app.start_time.elapsed());
     let time_str = format_duration(elapsed);
+
+    let eta_str = if app.scan_complete && !app.done && processed > 0 && processed < total {
+        let elapsed_secs = elapsed.as_secs_f64();
+        if elapsed_secs > 0.0 {
+            let rate = processed as f64 / elapsed_secs;
+            let remaining = total - processed;
+            if rate > 0.0 {
+                let eta_secs = remaining as f64 / rate;
+                format_duration(Duration::from_secs(eta_secs as u64))
+            } else {
+                "-".to_string()
+            }
+        } else {
+            "-".to_string()
+        }
+    } else {
+        "-".to_string()
+    };
+
     let stats_text = format!(
-        "Time: {}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
+        "Time: {}    ETA: {}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
         time_str,
+        eta_str,
         speed_text,
         progress::format_bytes(app.summary.bytes_copied),
         app.summary.files_skipped
@@ -710,6 +730,37 @@ mod tests {
         app.handle_message(ProgressMsg::Done);
         assert!(app.done);
         assert!(app.total_time.is_some());
+    }
+
+    #[test]
+    fn test_ui_eta_displayed() {
+        let mut app = App::default();
+        // Simulate active processing state
+        app.scan_complete = true;
+        app.files_with_exif = 100;
+        app.summary.files_copied = 10; // processed = 10
+        app.done = false;
+        // start_time is now(), so elapsed is tiny. processed/elapsed is huge.
+        // remaining/rate is tiny. ETA should be 00:00 or similar, but not "-".
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|f| ui(f, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+
+        let mut found_eta = false;
+        for y in 0..24 {
+            let mut row_text = String::new();
+            for x in 0..80 {
+                row_text.push_str(buffer[(x, y)].symbol());
+            }
+            if row_text.contains("ETA:") {
+                found_eta = true;
+                break;
+            }
+        }
+        assert!(found_eta, "ETA label not found in UI");
     }
 
     #[test]
