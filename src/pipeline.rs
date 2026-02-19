@@ -6,7 +6,7 @@
 //! 3. **Handler**: Copies files to destination with deduplication
 
 use std::fs::{self, File};
-use std::io::{self, Read};
+use std::io::{self, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,6 +29,7 @@ const CHANNEL_BUFFER_SIZE: usize = 1024;
 #[derive(Debug)]
 pub struct FileInfo {
     pub path: SourcePath,
+    pub file: File,
     pub model: String,
     pub date: NaiveDate,
 }
@@ -289,46 +290,60 @@ fn file_processor(
             return;
         }
 
-        let Ok(ms) = MediaSource::file_path(&path) else {
-            continue;
-        };
-
-        if !ms.has_exif() {
-            continue;
-        }
-
-        let iter: ExifIter = match parser.parse(ms) {
-            Ok(iter) => iter,
+        let mut file = match File::open(&path) {
+            Ok(f) => f,
             Err(_) => continue,
         };
 
-        let mut model = None;
-        let mut date = None;
+        // Use a block to ensure MediaSource and ExifIter are dropped before we reuse `file`
+        let (model, date) = {
+            let Ok(ms) = MediaSource::seekable(&mut file) else {
+                continue;
+            };
 
-        for mut entry in iter {
-            if let Some(tag) = entry.tag() {
-                match tag {
-                    ExifTag::Model => {
-                        model = entry
-                            .take_value()
-                            .and_then(|v| v.as_str().map(paths::sanitize_str));
+            if !ms.has_exif() {
+                continue;
+            }
+
+            let iter: ExifIter = match parser.parse(ms) {
+                Ok(iter) => iter,
+                Err(_) => continue,
+            };
+
+            let mut model = None;
+            let mut date = None;
+
+            for mut entry in iter {
+                if let Some(tag) = entry.tag() {
+                    match tag {
+                        ExifTag::Model => {
+                            model = entry
+                                .take_value()
+                                .and_then(|v| v.as_str().map(paths::sanitize_str));
+                        }
+                        ExifTag::DateTimeOriginal => {
+                            date = entry
+                                .take_value()
+                                .and_then(|v| v.as_time_components())
+                                .map(|(ndt, _offset)| ndt.date());
+                        }
+                        _ => {}
                     }
-                    ExifTag::DateTimeOriginal => {
-                        date = entry
-                            .take_value()
-                            .and_then(|v| v.as_time_components())
-                            .map(|(ndt, _offset)| ndt.date());
-                    }
-                    _ => {}
+                }
+
+                if model.is_some() && date.is_some() {
+                    break;
                 }
             }
-
-            if model.is_some() && date.is_some() {
-                break;
-            }
-        }
+            (model, date)
+        };
 
         if let (Some(model), Some(date)) = (model, date) {
+            // Reset file cursor to start for the handler
+            if file.seek(io::SeekFrom::Start(0)).is_err() {
+                continue;
+            }
+
             send_progress(
                 &progress_tx,
                 ProgressMsg::ExifExtracted {
@@ -339,6 +354,7 @@ fn file_processor(
             );
             let file_info = FileInfo {
                 path: SourcePath::new(path),
+                file,
                 model,
                 date,
             };
@@ -869,19 +885,9 @@ fn file_handler(
         // Use sanitized filename for destination to prevent creating files with control characters
         let dest_path = dest_dir.join(&filename_str);
 
-        // Open source file early to reuse handle and avoid double open/stat
-        let mut src_file = match File::open(&info.path) {
-            Ok(f) => f,
-            Err(e) => {
-                report_error(
-                    &progress_tx,
-                    info.path.to_string(),
-                    format!("Failed to open source: {e}"),
-                    &shutdown,
-                );
-                continue;
-            }
-        };
+        // Use the open file handle passed from processor
+        // It is already seeked to 0 by the processor
+        let mut src_file = info.file;
 
         // Use fstat (cheap) to get size and check if regular file
         let src_meta = match src_file.metadata() {
