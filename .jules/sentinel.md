@@ -12,3 +12,8 @@
 **Vulnerability:** Filenames and EXIF data containing ANSI escape codes or control characters were displayed raw in the TUI and text logs, allowing potential terminal manipulation.
 **Learning:** `Path::display()` does not sanitize control characters. It only escapes invalid UTF-8 (using replacement characters), but valid UTF-8 control codes are passed through.
 **Prevention:** Always sanitize user-controlled strings (filenames, metadata) before displaying them in a terminal. Use a helper function to replace control characters with a safe placeholder (like `?`).
+
+## 2026-02-04 - Partial File Cleanup on Copy Failure
+**Vulnerability:** If `io::copy` failed mid-operation (e.g., disk full), a partially written file remained at the destination. This corrupted artifact could be mistaken for a valid backup, leading to data loss or integrity issues.
+**Learning:** `std::io::copy` does not automatically clean up the destination file on error. Relying on `create_new(true)` prevents overwrites but does not handle partial writes.
+**Prevention:** Wrap file copying operations in a transaction-like block. Catch errors, attempt to delete the destination file (ignoring deletion errors), and then propagate the original error.

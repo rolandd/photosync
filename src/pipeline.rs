@@ -767,6 +767,60 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(err.to_string(), "Source is not a regular file");
     }
+
+    #[test]
+    fn test_atomic_copy_cleanup_on_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest_path = dir.path().join("partial_copy.bin");
+
+        // Helper failing reader
+        struct FailingReader {
+            data: &'static [u8],
+            cursor: usize,
+            fail_at: usize,
+        }
+
+        impl Read for FailingReader {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                if self.cursor >= self.fail_at {
+                    return Err(io::Error::new(io::ErrorKind::Other, "Simulated error"));
+                }
+                let remaining = self.data.len() - self.cursor;
+                let to_read = std::cmp::min(buf.len(), remaining);
+                let to_read = std::cmp::min(to_read, self.fail_at - self.cursor);
+
+                buf[..to_read].copy_from_slice(&self.data[self.cursor..self.cursor + to_read]);
+                self.cursor += to_read;
+                Ok(to_read)
+            }
+        }
+
+        // Create a dummy metadata object (needed by atomic_copy_file)
+        let dummy_path = dir.path().join("dummy");
+        File::create(&dummy_path).unwrap();
+        let meta = fs::metadata(&dummy_path).unwrap();
+
+        let data = b"some data that is long enough";
+        let mut reader = FailingReader {
+            data,
+            cursor: 0,
+            fail_at: 5, // Fail after reading 5 bytes
+        };
+
+        // This should fail
+        let result = atomic_copy_file(&mut reader, &dest_path, &meta);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.to_string(), "Simulated error");
+
+        // Verify cleanup: file should NOT exist
+        if dest_path.exists() {
+            // If it exists, it means cleanup failed (or wasn't implemented yet)
+            // For now, we expect this to exist because we haven't implemented the fix.
+            // But the test is designed to verify the fix, so this is the failure condition.
+            panic!("Destination file still exists after failed copy!");
+        }
+    }
 }
 
 /// Copies a file to a destination, failing if the destination already exists.
@@ -775,7 +829,11 @@ mod tests {
 ///
 /// **Note:** The caller must ensure that `reader` is at the beginning of the file (position 0)
 /// and that `meta` corresponds to the `reader` file handle.
-fn atomic_copy_file(reader: &mut File, dest: &Path, meta: &std::fs::Metadata) -> io::Result<u64> {
+fn atomic_copy_file<R: Read>(
+    reader: &mut R,
+    dest: &Path,
+    meta: &std::fs::Metadata,
+) -> io::Result<u64> {
     // Security check: ensure we are reading from a regular file, not a device/pipe/socket.
     // This mitigates DoS risks (reading infinite streams like /dev/zero) and blocking on pipes.
     // Uses fstat (cheap).
@@ -790,7 +848,16 @@ fn atomic_copy_file(reader: &mut File, dest: &Path, meta: &std::fs::Metadata) ->
         .write(true)
         .create_new(true)
         .open(dest)?;
-    let len = io::copy(reader, &mut writer)?;
+
+    let len = match io::copy(reader, &mut writer) {
+        Ok(len) => len,
+        Err(e) => {
+            // Attempt to remove the partially written file.
+            // We ignore errors during removal to report the original copy error.
+            let _ = fs::remove_file(dest);
+            return Err(e);
+        }
+    };
 
     // Note: We do NOT copy permissions from the source file.
     // For photos/archives, it's safer to rely on the user's umask and default file creation
