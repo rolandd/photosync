@@ -162,6 +162,44 @@ impl App {
         }
     }
 
+    /// Calculate estimated time remaining.
+    ///
+    /// Returns `None` if the scan is not complete or if there is insufficient
+    /// data to make an estimate (i.e., no copies have finished yet).
+    fn eta(&self) -> Option<Duration> {
+        // Can't estimate total files until scan is complete.
+        if !self.scan_complete || self.recent_copies.is_empty() {
+            return None;
+        }
+
+        let total_files = self.files_with_exif;
+        let processed = self.summary.total_processed();
+
+        if processed >= total_files {
+            return Some(Duration::ZERO);
+        }
+
+        let remaining = total_files - processed;
+
+        // Calculate average duration per file from recent history
+        let total_duration: Duration = self
+            .recent_copies
+            .iter()
+            .fold(Duration::ZERO, |d, (_, dur)| d + *dur);
+
+        let count = self.recent_copies.len() as u32;
+
+        if count == 0 || total_duration.is_zero() {
+            return None;
+        }
+
+        // Average duration per file
+        let avg_duration = total_duration / count;
+
+        // Simple projection
+        Some(avg_duration * remaining as u32)
+    }
+
     fn handle_message(&mut self, msg: ProgressMsg) {
         // Update common summary statistics; sets done flag on Done message
         self.done = self.summary.update(&msg);
@@ -394,9 +432,17 @@ fn ui(frame: &mut Frame, app: &App) {
     };
     let elapsed = app.total_time.unwrap_or_else(|| app.start_time.elapsed());
     let time_str = format_duration(elapsed);
+
+    let eta_str = if let Some(eta) = app.eta() {
+        format!("    ETA: {}", format_duration(eta))
+    } else {
+        String::new()
+    };
+
     let stats_text = format!(
-        "Time: {}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
+        "Time: {}{}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
         time_str,
+        eta_str,
         speed_text,
         progress::format_bytes(app.summary.bytes_copied),
         app.summary.files_skipped
@@ -710,6 +756,70 @@ mod tests {
         app.handle_message(ProgressMsg::Done);
         assert!(app.done);
         assert!(app.total_time.is_some());
+    }
+
+    #[test]
+    fn test_eta_not_started() {
+        let app = App::default();
+        // scan_complete is false
+        assert!(app.eta().is_none());
+    }
+
+    #[test]
+    fn test_eta_no_copies() {
+        let mut app = App::default();
+        app.scan_complete = true;
+        app.files_with_exif = 10;
+        // recent_copies is empty
+        assert!(app.eta().is_none());
+    }
+
+    #[test]
+    fn test_eta_calculation() {
+        let mut app = App::default();
+        app.scan_complete = true;
+        app.files_with_exif = 10;
+
+        // 5 files processed (copied)
+        app.summary.files_copied = 5;
+
+        // Recent copies: 1 file took 1 second
+        app.recent_copies.push_back((1024, Duration::from_secs(1)));
+
+        // Remaining = 10 - 5 = 5 files
+        // Avg duration = 1s / 1 = 1s
+        // ETA = 5 * 1s = 5s
+
+        let eta = app.eta().unwrap();
+        assert_eq!(eta, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn test_eta_calculation_average() {
+        let mut app = App::default();
+        app.scan_complete = true;
+        app.files_with_exif = 20;
+        app.summary.files_copied = 10; // 10 remaining
+
+        // 2 files in history: one 1s, one 3s. Avg = 2s.
+        app.recent_copies.push_back((100, Duration::from_secs(1)));
+        app.recent_copies.push_back((100, Duration::from_secs(3)));
+
+        let eta = app.eta().unwrap();
+        // 10 remaining * 2s/file = 20s
+        assert_eq!(eta, Duration::from_secs(20));
+    }
+
+    #[test]
+    fn test_eta_finished() {
+        let mut app = App::default();
+        app.scan_complete = true;
+        app.files_with_exif = 10;
+        app.summary.files_copied = 10;
+        app.recent_copies.push_back((100, Duration::from_secs(1)));
+
+        // All processed, ETA should be 0
+        assert_eq!(app.eta().unwrap(), Duration::ZERO);
     }
 
     #[test]
