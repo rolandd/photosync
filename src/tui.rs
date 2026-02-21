@@ -162,6 +162,15 @@ impl App {
         }
     }
 
+    /// Calculate average duration per file from recent copies.
+    fn average_file_duration(&self) -> Option<Duration> {
+        if self.recent_copies.is_empty() {
+            return None;
+        }
+        let total_duration: Duration = self.recent_copies.iter().map(|(_, d)| *d).sum();
+        Some(total_duration / self.recent_copies.len() as u32)
+    }
+
     fn handle_message(&mut self, msg: ProgressMsg) {
         // Update common summary statistics; sets done flag on Done message
         self.done = self.summary.update(&msg);
@@ -394,9 +403,28 @@ fn ui(frame: &mut Frame, app: &App) {
     };
     let elapsed = app.total_time.unwrap_or_else(|| app.start_time.elapsed());
     let time_str = format_duration(elapsed);
+
+    let eta_str = if !app.done && app.scan_complete {
+        if let Some(avg_duration) = app.average_file_duration() {
+            let processed = app.summary.total_processed();
+            let remaining = app.files_with_exif.saturating_sub(processed);
+            if remaining > 0 {
+                let eta = avg_duration * remaining as u32;
+                format!("    ETA: {}", format_duration(eta))
+            } else {
+                String::new()
+            }
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
     let stats_text = format!(
-        "Time: {}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
+        "Time: {}{}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
         time_str,
+        eta_str,
         speed_text,
         progress::format_bytes(app.summary.bytes_copied),
         app.summary.files_skipped
@@ -547,6 +575,50 @@ mod tests {
             .push_back((20 * 1024 * 1024, Duration::from_secs(2)));
         let speed = app.speed_bytes_per_sec();
         assert!((speed - 10485760.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_average_file_duration() {
+        let mut app = App::default();
+        assert!(app.average_file_duration().is_none());
+
+        app.recent_copies.push_back((100, Duration::from_secs(2)));
+        app.recent_copies.push_back((200, Duration::from_secs(4)));
+
+        // (2 + 4) / 2 = 3 seconds
+        assert_eq!(app.average_file_duration(), Some(Duration::from_secs(3)));
+    }
+
+    #[test]
+    fn test_ui_eta_display() {
+        let mut app = App::default();
+        app.scan_complete = true;
+        app.files_with_exif = 10;
+        // processed = 2
+        app.summary.files_copied = 2;
+
+        // Avg duration 2s
+        app.recent_copies.push_back((100, Duration::from_secs(2)));
+
+        // Remaining = 8. ETA = 8 * 2 = 16s.
+
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|f| ui(f, &app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let mut found_eta = false;
+        for y in 0..24 {
+            let mut row_text = String::new();
+            for x in 0..120 {
+                row_text.push_str(buffer[(x, y)].symbol());
+            }
+            if row_text.contains("ETA: 00:16") {
+                found_eta = true;
+            }
+        }
+        assert!(found_eta, "ETA not found in UI output");
     }
 
     #[test]
