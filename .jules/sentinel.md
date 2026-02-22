@@ -12,3 +12,8 @@
 **Vulnerability:** Filenames and EXIF data containing ANSI escape codes or control characters were displayed raw in the TUI and text logs, allowing potential terminal manipulation.
 **Learning:** `Path::display()` does not sanitize control characters. It only escapes invalid UTF-8 (using replacement characters), but valid UTF-8 control codes are passed through.
 **Prevention:** Always sanitize user-controlled strings (filenames, metadata) before displaying them in a terminal. Use a helper function to replace control characters with a safe placeholder (like `?`).
+
+## 2026-02-04 - Partial File Artifacts on Copy Failure
+**Vulnerability:** When using `io::copy` to a `create_new(true)` destination, a failure mid-stream left a partially written file. This file was not cleaned up, causing subsequent runs to see it as "existing" and skip it, potentially leading to data loss if the source is deleted.
+**Learning:** `io::copy` is not transactional. If it fails, the destination file remains in its current state.
+**Prevention:** Catch errors from `io::copy` and explicitly delete the destination file. On Windows, ensure the file handle is dropped before deletion.
