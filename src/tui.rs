@@ -844,10 +844,8 @@ mod tests {
         app.summary.files_copied = 2;
 
         // Recent copies: 1 sec, 2 sec. Avg = 1.5s
-        app.recent_copies
-            .push_back((100, Duration::from_secs(1)));
-        app.recent_copies
-            .push_back((100, Duration::from_secs(2)));
+        app.recent_copies.push_back((100, Duration::from_secs(1)));
+        app.recent_copies.push_back((100, Duration::from_secs(2)));
 
         // Remaining = 10 - 2 = 8
         // ETA = 8 * 1.5 = 12s
