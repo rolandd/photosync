@@ -135,6 +135,30 @@ impl App {
         SPINNER[self.spinner_idx]
     }
 
+    /// Calculate estimated time remaining based on recent copy speed.
+    fn calculate_eta(&self) -> Option<Duration> {
+        if !self.scan_complete {
+            return None;
+        }
+
+        let processed = self.summary.total_processed();
+        let remaining = self.files_with_exif.saturating_sub(processed);
+
+        if remaining == 0 {
+            return Some(Duration::ZERO);
+        }
+
+        if self.recent_copies.is_empty() {
+            return None;
+        }
+
+        let total_duration: Duration = self.recent_copies.iter().map(|(_, d)| *d).sum();
+        let count = self.recent_copies.len() as u32;
+        let avg_duration = total_duration / count;
+
+        Some(avg_duration * remaining as u32)
+    }
+
     fn add_recent(&mut self, text: String, style: Style) {
         if self.recent_items.len() >= self.max_recent_items {
             self.recent_items.pop_back();
@@ -394,9 +418,14 @@ fn ui(frame: &mut Frame, app: &App) {
     };
     let elapsed = app.total_time.unwrap_or_else(|| app.start_time.elapsed());
     let time_str = format_duration(elapsed);
+    let eta_str = app
+        .calculate_eta()
+        .map(format_duration)
+        .unwrap_or_else(|| "--:--".to_string());
     let stats_text = format!(
-        "Time: {}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
+        "Time: {}    ETA: {}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
         time_str,
+        eta_str,
         speed_text,
         progress::format_bytes(app.summary.bytes_copied),
         app.summary.files_skipped
@@ -781,5 +810,59 @@ mod tests {
                 case.name
             );
         }
+    }
+
+    #[test]
+    fn test_calculate_eta_scanning() {
+        let mut app = App::default();
+        app.scan_complete = false;
+        app.files_with_exif = 10;
+        app.summary.files_copied = 5;
+        app.recent_copies.push_back((100, Duration::from_secs(1)));
+
+        assert_eq!(app.calculate_eta(), None);
+    }
+
+    #[test]
+    fn test_calculate_eta_no_copies() {
+        let mut app = App::default();
+        app.scan_complete = true;
+        app.files_with_exif = 10;
+        app.summary.files_copied = 0;
+        // recent_copies is empty by default
+
+        assert_eq!(app.calculate_eta(), None);
+    }
+
+    #[test]
+    fn test_calculate_eta_calculation() {
+        let mut app = App::default();
+        app.scan_complete = true;
+        app.files_with_exif = 10;
+
+        // 2 files processed (copies)
+        app.summary.files_copied = 2;
+
+        // Recent copies: 1 sec, 2 sec. Avg = 1.5s
+        app.recent_copies
+            .push_back((100, Duration::from_secs(1)));
+        app.recent_copies
+            .push_back((100, Duration::from_secs(2)));
+
+        // Remaining = 10 - 2 = 8
+        // ETA = 8 * 1.5 = 12s
+
+        let eta = app.calculate_eta().unwrap();
+        assert_eq!(eta, Duration::from_secs(12));
+    }
+
+    #[test]
+    fn test_calculate_eta_done() {
+        let mut app = App::default();
+        app.scan_complete = true;
+        app.files_with_exif = 10;
+        app.summary.files_copied = 10;
+
+        assert_eq!(app.calculate_eta(), Some(Duration::ZERO));
     }
 }
