@@ -237,8 +237,9 @@ fn file_walker(
         .follow_links(false)
         .into_iter()
         .filter_entry(move |e: &walkdir::DirEntry| {
-            let name = e.file_name().to_string_lossy();
-            !exclude_dirs.iter().any(|ex| name == *ex)
+            !exclude_dirs
+                .iter()
+                .any(|ex| e.file_name() == std::ffi::OsStr::new(ex))
         });
 
     for walk_entry in walker {
@@ -823,22 +824,16 @@ fn file_handler(
         // Performance optimization: Cache the destination directory result.
         // Files are often processed in sequence from the same camera/date.
         // This avoids re-running template substitution and string allocations.
-        let dest_result = if let Some((ref m, d, ref r)) = dest_cache {
-            if m == &info.model && d == info.date {
-                r.clone()
-            } else {
-                let r = compute_dest_dir(&target_dir, &config, &info.model, info.date);
-                dest_cache = Some((info.model.clone(), info.date, r.clone()));
-                r
-            }
-        } else {
+        if dest_cache
+            .as_ref()
+            .is_none_or(|(m, d, _)| m != &info.model || *d != info.date)
+        {
             let r = compute_dest_dir(&target_dir, &config, &info.model, info.date);
-            dest_cache = Some((info.model.clone(), info.date, r.clone()));
-            r
-        };
+            dest_cache = Some((info.model.clone(), info.date, r));
+        }
 
-        let dest_dir = match dest_result {
-            DestDirResult::Ok(path) => path,
+        let dest_dir = match &dest_cache.as_ref().unwrap().2 {
+            DestDirResult::Ok(path) => path.clone(),
             DestDirResult::UnknownCamera => {
                 send_progress(
                     &progress_tx,
