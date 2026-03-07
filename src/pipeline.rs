@@ -704,7 +704,7 @@ mod tests {
         // Run atomic_copy_file
         let mut file = File::open(&src).unwrap();
         let meta = file.metadata().unwrap();
-        atomic_copy_file(&mut file, &dest, &meta).unwrap();
+        atomic_copy_file(&mut file, &dest, meta.is_file()).unwrap();
 
         // Check destination permissions
         let dest_perms = fs::metadata(&dest).unwrap().permissions();
@@ -757,7 +757,7 @@ mod tests {
 
         // This should fail because it's not a regular file.
         let meta = reader.metadata().unwrap();
-        let result = atomic_copy_file(&mut reader, &dest_path, &meta);
+        let result = atomic_copy_file(&mut reader, &dest_path, meta.is_file());
 
         // Ensure writer thread finishes
         let _ = handle.join();
@@ -767,6 +767,42 @@ mod tests {
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(err.to_string(), "Source is not a regular file");
     }
+
+    struct FailingReader {
+        data: Vec<u8>,
+        fail_after: usize,
+        bytes_read: usize,
+    }
+
+    impl Read for FailingReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.bytes_read >= self.fail_after {
+                return Err(io::Error::new(io::ErrorKind::Other, "Simulated I/O error"));
+            }
+            let to_read = std::cmp::min(buf.len(), self.fail_after - self.bytes_read);
+            let end = self.bytes_read + to_read;
+            buf[..to_read].copy_from_slice(&self.data[self.bytes_read..end]);
+            self.bytes_read += to_read;
+            Ok(to_read)
+        }
+    }
+
+    #[test]
+    fn test_atomic_copy_integrity() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dest.bin");
+
+        let mut failing_reader = FailingReader {
+            data: vec![0; 1024],
+            fail_after: 512,
+            bytes_read: 0,
+        };
+
+        let result = atomic_copy_file(&mut failing_reader, &dest, true);
+
+        assert!(result.is_err(), "Copy should fail");
+        assert!(!dest.exists(), "Destination file should be cleaned up on failure");
+    }
 }
 
 /// Copies a file to a destination, failing if the destination already exists.
@@ -775,11 +811,11 @@ mod tests {
 ///
 /// **Note:** The caller must ensure that `reader` is at the beginning of the file (position 0)
 /// and that `meta` corresponds to the `reader` file handle.
-fn atomic_copy_file(reader: &mut File, dest: &Path, meta: &std::fs::Metadata) -> io::Result<u64> {
+fn atomic_copy_file<R: Read>(reader: &mut R, dest: &Path, source_is_regular_file: bool) -> io::Result<u64> {
     // Security check: ensure we are reading from a regular file, not a device/pipe/socket.
     // This mitigates DoS risks (reading infinite streams like /dev/zero) and blocking on pipes.
     // Uses fstat (cheap).
-    if !meta.is_file() {
+    if !source_is_regular_file {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "Source is not a regular file",
@@ -790,14 +826,23 @@ fn atomic_copy_file(reader: &mut File, dest: &Path, meta: &std::fs::Metadata) ->
         .write(true)
         .create_new(true)
         .open(dest)?;
-    let len = io::copy(reader, &mut writer)?;
 
-    // Note: We do NOT copy permissions from the source file.
-    // For photos/archives, it's safer to rely on the user's umask and default file creation
-    // permissions (typically 0644 or 0600) rather than trusting metadata from the source
-    // filesystem (e.g. FAT/exFAT often reports 0777/0755).
-
-    Ok(len)
+    match io::copy(reader, &mut writer) {
+        Ok(len) => {
+            // Note: We do NOT copy permissions from the source file.
+            // For photos/archives, it's safer to rely on the user's umask and default file creation
+            // permissions (typically 0644 or 0600) rather than trusting metadata from the source
+            // filesystem (e.g. FAT/exFAT often reports 0777/0755).
+            Ok(len)
+        }
+        Err(e) => {
+            // Cleanup on failure to prevent corrupt artifacts (CWE-459)
+            // Drop writer first: Windows requires closed handle for removal
+            drop(writer);
+            let _ = fs::remove_file(dest);
+            Err(e)
+        }
+    }
 }
 
 /// Final handler for files with complete metadata.
@@ -999,7 +1044,7 @@ fn file_handler(
         let start = Instant::now();
         // Optimization: Try to copy first. atomic_copy_file fails with AlreadyExists if dest exists.
         // This saves a redundant `stat` call in the common case (new files).
-        match atomic_copy_file(&mut src_file, &dest_path, &src_meta) {
+        match atomic_copy_file(&mut src_file, &dest_path, src_meta.is_file()) {
             Ok(_) => {
                 let duration = start.elapsed();
                 send_progress(
