@@ -380,7 +380,11 @@ fn ui(frame: &mut Frame, app: &App) {
     let percentage = (progress_ratio * 100.0).min(100.0);
 
     let gauge = Gauge::default()
-        .gauge_style(Style::default().fg(get_status_color(app)).bg(Color::DarkGray))
+        .gauge_style(
+            Style::default()
+                .fg(get_status_color(app))
+                .bg(Color::DarkGray),
+        )
         .ratio(progress_ratio.min(1.0))
         .label(format!("{} / {} ({:.0}%)", processed, total, percentage));
     frame.render_widget(gauge, chunks[2]);
