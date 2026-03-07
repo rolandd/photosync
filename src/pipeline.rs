@@ -801,7 +801,10 @@ mod tests {
         let result = atomic_copy_file(&mut failing_reader, &dest, true);
 
         assert!(result.is_err(), "Copy should fail");
-        assert!(!dest.exists(), "Destination file should be cleaned up on failure");
+        assert!(
+            !dest.exists(),
+            "Destination file should be cleaned up on failure"
+        );
     }
 }
 
@@ -811,7 +814,11 @@ mod tests {
 ///
 /// **Note:** The caller must ensure that `reader` is at the beginning of the file (position 0)
 /// and that `meta` corresponds to the `reader` file handle.
-fn atomic_copy_file<R: Read>(reader: &mut R, dest: &Path, source_is_regular_file: bool) -> io::Result<u64> {
+fn atomic_copy_file<R: Read>(
+    reader: &mut R,
+    dest: &Path,
+    source_is_regular_file: bool,
+) -> io::Result<u64> {
     // Security check: ensure we are reading from a regular file, not a device/pipe/socket.
     // This mitigates DoS risks (reading infinite streams like /dev/zero) and blocking on pipes.
     // Uses fstat (cheap).
