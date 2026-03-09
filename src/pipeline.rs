@@ -779,7 +779,16 @@ mod tests {
             if self.bytes_read >= self.fail_after {
                 return Err(io::Error::new(io::ErrorKind::Other, "Simulated I/O error"));
             }
-            let to_read = std::cmp::min(buf.len(), self.fail_after - self.bytes_read);
+            if self.bytes_read >= self.data.len() {
+                return Ok(0); // EOF
+            }
+            let remaining_data = self.data.len() - self.bytes_read;
+            let remaining_until_fail = self.fail_after - self.bytes_read;
+            let to_read = std::cmp::min(
+                buf.len(),
+                std::cmp::min(remaining_data, remaining_until_fail),
+            );
+
             let end = self.bytes_read + to_read;
             buf[..to_read].copy_from_slice(&self.data[self.bytes_read..end]);
             self.bytes_read += to_read;
