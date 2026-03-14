@@ -237,8 +237,9 @@ fn file_walker(
         .follow_links(false)
         .into_iter()
         .filter_entry(move |e: &walkdir::DirEntry| {
-            let name = e.file_name().to_string_lossy();
-            !exclude_dirs.iter().any(|ex| name == *ex)
+            !exclude_dirs
+                .iter()
+                .any(|ex| e.file_name() == std::ffi::OsStr::new(ex))
         });
 
     for walk_entry in walker {
@@ -823,19 +824,15 @@ fn file_handler(
         // Performance optimization: Cache the destination directory result.
         // Files are often processed in sequence from the same camera/date.
         // This avoids re-running template substitution and string allocations.
-        let dest_result = if let Some((ref m, d, ref r)) = dest_cache {
-            if m == &info.model && d == info.date {
-                r.clone()
-            } else {
-                let r = compute_dest_dir(&target_dir, &config, &info.model, info.date);
-                dest_cache = Some((info.model.clone(), info.date, r.clone()));
-                r
-            }
-        } else {
+        if dest_cache
+            .as_ref()
+            .is_none_or(|(m, d, _)| m != &info.model || *d != info.date)
+        {
             let r = compute_dest_dir(&target_dir, &config, &info.model, info.date);
-            dest_cache = Some((info.model.clone(), info.date, r.clone()));
-            r
-        };
+            dest_cache = Some((info.model.clone(), info.date, r));
+        }
+
+        let dest_result = &dest_cache.as_ref().unwrap().2;
 
         let dest_dir = match dest_result {
             DestDirResult::Ok(path) => path,
@@ -850,7 +847,7 @@ fn file_handler(
                 continue;
             }
             DestDirResult::TemplateError(msg) => {
-                report_error(&progress_tx, info.path.to_string(), msg, &shutdown);
+                report_error(&progress_tx, info.path.to_string(), msg.clone(), &shutdown);
                 continue;
             }
         };
@@ -973,8 +970,8 @@ fn file_handler(
         }
 
         // Create destination directory with caching to avoid redundant calls
-        if last_dest_dir.as_ref() != Some(&dest_dir) {
-            if let Err(e) = fs::create_dir_all(&dest_dir) {
+        if last_dest_dir.as_ref() != Some(dest_dir) {
+            if let Err(e) = fs::create_dir_all(dest_dir) {
                 report_error(
                     &progress_tx,
                     filename_str,
