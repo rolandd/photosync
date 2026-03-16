@@ -832,7 +832,7 @@ fn file_handler(
             dest_cache = Some((info.model.clone(), info.date, r));
         }
 
-        let dest_result = &dest_cache.as_ref().unwrap().2;
+        let dest_result = dest_cache.as_ref().map(|(_, _, r)| r).expect("cache was just populated");
 
         let dest_dir = match dest_result {
             DestDirResult::Ok(path) => path,
