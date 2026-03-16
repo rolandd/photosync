@@ -824,15 +824,20 @@ fn file_handler(
         // Performance optimization: Cache the destination directory result.
         // Files are often processed in sequence from the same camera/date.
         // This avoids re-running template substitution and string allocations.
-        if dest_cache
+        let is_hit = dest_cache
             .as_ref()
-            .is_none_or(|(m, d, _)| m != &info.model || *d != info.date)
-        {
+            .is_some_and(|(m, d, _)| m == &info.model && *d == info.date);
+
+        if !is_hit {
             let r = compute_dest_dir(&target_dir, &config, &info.model, info.date);
             dest_cache = Some((info.model.clone(), info.date, r));
         }
 
-        let dest_result = dest_cache.as_ref().map(|(_, _, r)| r).expect("cache was just populated");
+        let dest_result = if let Some((_, _, ref r)) = dest_cache {
+            r
+        } else {
+            unreachable!("Cache was just populated")
+        };
 
         let dest_dir = match dest_result {
             DestDirResult::Ok(path) => path,
