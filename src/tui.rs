@@ -142,6 +142,18 @@ impl App {
         self.recent_items.push_front(RecentItem { text, style });
     }
 
+    /// Calculate estimated time of arrival (ETA).
+    fn eta(&self) -> Option<Duration> {
+        if !self.scan_complete || self.recent_copies.is_empty() || self.files_to_copy == 0 {
+            return None;
+        }
+
+        let total_duration: Duration = self.recent_copies.iter().map(|(_, dur)| *dur).sum();
+
+        let avg_duration = total_duration / self.recent_copies.len() as u32;
+        Some(avg_duration * self.files_to_copy as u32)
+    }
+
     /// Calculate speed in bytes per second from recent copies.
     fn speed_bytes_per_sec(&self) -> f64 {
         if self.recent_copies.is_empty() {
@@ -191,6 +203,7 @@ impl App {
                 duration,
             } => {
                 self.current_file = None;
+                self.files_to_copy = self.files_to_copy.saturating_sub(1);
 
                 // Add to rolling window for speed calculation
                 if self.recent_copies.len() >= SPEED_WINDOW_SIZE {
@@ -380,7 +393,11 @@ fn ui(frame: &mut Frame, app: &App) {
     let percentage = (progress_ratio * 100.0).min(100.0);
 
     let gauge = Gauge::default()
-        .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
+        .gauge_style(
+            Style::default()
+                .fg(get_status_color(app))
+                .bg(Color::DarkGray),
+        )
         .ratio(progress_ratio.min(1.0))
         .label(format!("{} / {} ({:.0}%)", processed, total, percentage));
     frame.render_widget(gauge, chunks[2]);
@@ -394,9 +411,14 @@ fn ui(frame: &mut Frame, app: &App) {
     };
     let elapsed = app.total_time.unwrap_or_else(|| app.start_time.elapsed());
     let time_str = format_duration(elapsed);
+    let eta_str = app
+        .eta()
+        .map(|d| format!("    ETA: {}", format_duration(d)))
+        .unwrap_or_default();
     let stats_text = format!(
-        "Time: {}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
+        "Time: {}{}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
         time_str,
+        eta_str,
         speed_text,
         progress::format_bytes(app.summary.bytes_copied),
         app.summary.files_skipped
@@ -424,7 +446,7 @@ fn ui(frame: &mut Frame, app: &App) {
             .style(
                 Style::default()
                     .fg(Color::Black)
-                    .bg(Color::Green)
+                    .bg(get_status_color(app))
                     .add_modifier(Modifier::BOLD),
             )
             .alignment(Alignment::Center);
@@ -519,6 +541,35 @@ mod tests {
         assert_eq!(app.summary.files_found, 0);
         assert_eq!(app.summary.files_copied, 0);
         assert!(!app.done);
+    }
+
+    #[test]
+    fn test_eta_calculation() {
+        let mut app = App::default();
+        assert!(app.eta().is_none(), "ETA should be none initially");
+
+        // Need scan to be complete
+        app.scan_complete = true;
+        assert!(
+            app.eta().is_none(),
+            "ETA should be none if no files to copy"
+        );
+
+        app.files_to_copy = 10;
+        assert!(
+            app.eta().is_none(),
+            "ETA should be none if no recent copies"
+        );
+
+        // Add copies taking 100ms and 200ms
+        app.recent_copies
+            .push_back((1024, Duration::from_millis(100)));
+        app.recent_copies
+            .push_back((1024, Duration::from_millis(200)));
+
+        // Average should be 150ms. 150ms * 10 files = 1.5 seconds.
+        let eta = app.eta().expect("ETA should be calculated");
+        assert_eq!(eta, Duration::from_millis(1500));
     }
 
     #[test]
