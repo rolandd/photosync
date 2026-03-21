@@ -237,8 +237,9 @@ fn file_walker(
         .follow_links(false)
         .into_iter()
         .filter_entry(move |e: &walkdir::DirEntry| {
-            let name = e.file_name().to_string_lossy();
-            !exclude_dirs.iter().any(|ex| name == *ex)
+            // Performance optimization: Avoid String allocation / Cow overhead by comparing OsStr directly
+            let name = e.file_name();
+            !exclude_dirs.iter().any(|ex| name == ex.as_str())
         });
 
     for walk_entry in walker {
