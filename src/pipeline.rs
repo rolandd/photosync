@@ -6,7 +6,7 @@
 //! 3. **Handler**: Copies files to destination with deduplication
 
 use std::fs::{self, File};
-use std::io::{self, Read};
+use std::io::{self, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,6 +31,7 @@ pub struct FileInfo {
     pub path: SourcePath,
     pub model: String,
     pub date: NaiveDate,
+    pub file: Option<File>,
 }
 
 /// Spawns the processing pipeline threads.
@@ -289,7 +290,24 @@ fn file_processor(
             return;
         }
 
-        let Ok(ms) = MediaSource::file_path(&path) else {
+        // Optimization: Open the file once here and reuse the handle in file_handler.
+        // This saves a redundant open() syscall per file.
+        let (ms, file_handle) = if let Ok(f) = File::open(&path) {
+            // Try to clone the file handle for parsing so we can pass the original to handler
+            match f.try_clone() {
+                Ok(clone) => match MediaSource::file(clone) {
+                    Ok(ms) => (ms, Some(f)),
+                    Err(_) => continue,
+                },
+                Err(_) => {
+                    // Fallback if clone fails: use path-based open for parser, no handle passed
+                    match MediaSource::file_path(&path) {
+                        Ok(ms) => (ms, None),
+                        Err(_) => continue,
+                    }
+                }
+            }
+        } else {
             continue;
         };
 
@@ -341,6 +359,7 @@ fn file_processor(
                 path: SourcePath::new(path),
                 model,
                 date,
+                file: file_handle,
             };
             if tx.send(file_info).is_err() {
                 return;
@@ -931,17 +950,32 @@ fn file_handler(
         let dest_path = dest_dir.join(&filename_str);
 
         // Open source file early to reuse handle and avoid double open/stat
-        let mut src_file = match File::open(&info.path) {
-            Ok(f) => f,
-            Err(e) => {
-                report_error(
-                    &progress_tx,
-                    info.path.to_string(),
-                    format!("Failed to open source: {e}"),
-                    &shutdown,
-                );
-                continue;
+        // If file handle was passed from processor, reuse it (and seek to start)
+        let mut src_file = match info.file {
+            Some(mut f) => {
+                if let Err(e) = f.seek(io::SeekFrom::Start(0)) {
+                    report_error(
+                        &progress_tx,
+                        info.path.to_string(),
+                        format!("Failed to seek source: {e}"),
+                        &shutdown,
+                    );
+                    continue;
+                }
+                f
             }
+            None => match File::open(&info.path) {
+                Ok(f) => f,
+                Err(e) => {
+                    report_error(
+                        &progress_tx,
+                        info.path.to_string(),
+                        format!("Failed to open source: {e}"),
+                        &shutdown,
+                    );
+                    continue;
+                }
+            },
         };
 
         // Use fstat (cheap) to get size and check if regular file
