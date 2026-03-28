@@ -17,3 +17,8 @@
 **Vulnerability:** A failed `io::copy` inside `atomic_copy_file` left partially written files at the destination. Because the pipeline handles `io::ErrorKind::AlreadyExists` by treating it as a duplicate, a failed copy attempt would permanently prevent the photo from being synced on subsequent runs (creating a persistent DoS/data loss condition).
 **Learning:** System APIs like `io::copy` do not guarantee state rollback on failure. When implementing atomic file operations with `create_new(true)`, the application is responsible for cleaning up artifacts if the operation aborts mid-stream.
 **Prevention:** Always wrap `io::copy` in a `match` block. On `Err`, explicitly `drop()` the destination file handle (crucial for Windows where open files are locked) and remove the incomplete file using `fs::remove_file()`.
+
+## 2026-03-08 - Terminal Injection via Error Messages
+**Vulnerability:** System error messages (e.g. from `io::Error` or internal `format!` strings) generated during file processing were directly displayed in the terminal via `report_error` without sanitization. An attacker could potentially embed ANSI escape sequences in file paths, which if wrapped in a system error, would be executed by the terminal.
+**Learning:** Even if explicit file path displays are sanitized, error messages wrapping those paths must also be sanitized before output to prevent Terminal Injection.
+**Prevention:** Always apply `sanitize_str` to the final error string representation before sending it to the terminal logging/UI channels.

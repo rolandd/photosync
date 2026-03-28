@@ -148,7 +148,7 @@ fn report_error(
         tx,
         ProgressMsg::CopyError {
             filename: filename.into(),
-            error: error.into(),
+            error: paths::sanitize_str(&error.into()),
         },
         shutdown,
     );
@@ -175,9 +175,9 @@ impl FileComparator {
     ///
     /// **Note:** The caller must ensure that `file1` is at the beginning of the file (position 0).
     fn compare_file(&mut self, file1: &mut File, size1: u64, path2: &Path) -> io::Result<bool> {
-        // Fast path: compare sizes first
+        // Fast path: compare sizes first, and ensure it's a regular file
         let meta2 = fs::metadata(path2)?;
-        if size1 != meta2.len() {
+        if !meta2.is_file() || size1 != meta2.len() {
             return Ok(false);
         }
 
