@@ -140,15 +140,15 @@ fn send_progress(tx: &SyncSender<ProgressMsg>, msg: ProgressMsg, shutdown: &Atom
 /// Helper to report errors to the UI.
 fn report_error(
     tx: &SyncSender<ProgressMsg>,
-    filename: impl Into<String>,
-    error: impl Into<String>,
+    filename: impl AsRef<str>,
+    error: impl AsRef<str>,
     shutdown: &AtomicBool,
 ) {
     send_progress(
         tx,
         ProgressMsg::CopyError {
-            filename: filename.into(),
-            error: error.into(),
+            filename: paths::sanitize_str(filename.as_ref()),
+            error: paths::sanitize_str(error.as_ref()),
         },
         shutdown,
     );
@@ -177,6 +177,17 @@ impl FileComparator {
     fn compare_file(&mut self, file1: &mut File, size1: u64, path2: &Path) -> io::Result<bool> {
         // Fast path: compare sizes first
         let meta2 = fs::metadata(path2)?;
+
+        // Security check: ensure the destination is a regular file.
+        // Opening special files like FIFOs or device nodes can block indefinitely,
+        // causing a Denial of Service (DoS).
+        if !meta2.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Destination is not a regular file",
+            ));
+        }
+
         if size1 != meta2.len() {
             return Ok(false);
         }
@@ -720,6 +731,59 @@ mod tests {
             0o600,
             "Owner should have read/write permissions"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_compare_file_rejects_fifo() {
+        use std::process::Command;
+        use std::thread;
+
+        let dir = tempfile::tempdir().unwrap();
+        let fifo_path = dir.path().join("test_fifo");
+        let src_path = dir.path().join("src.bin");
+
+        // Create a source file to compare
+        let mut src_file = File::create(&src_path).unwrap();
+        src_file.write_all(b"data").unwrap();
+        let src_meta = src_file.metadata().unwrap();
+
+        // Create FIFO using mkfifo command
+        let status = Command::new("mkfifo")
+            .arg(&fifo_path)
+            .status()
+            .expect("failed to execute mkfifo");
+        assert!(status.success(), "mkfifo failed");
+
+        // Start a timeout thread to kill the process if it blocks,
+        // rather than letting the whole test suite hang.
+        // Opening a FIFO without a reader/writer blocks indefinitely.
+        // We do NOT spawn a writer thread here, so if `compare_file` incorrectly
+        // attempts to open the FIFO, the test will hang (which we want to catch).
+        let fifo_clone = fifo_path.clone();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        thread::spawn(move || {
+            // Attempt to compare the source file with the FIFO
+            let mut comparator = FileComparator::new();
+            let mut src_file = File::open(&src_path).unwrap();
+            let result = comparator.compare_file(&mut src_file, src_meta.len(), &fifo_clone);
+            let _ = tx.send(result);
+        });
+
+        let result = match rx.recv_timeout(std::time::Duration::from_secs(2)) {
+            Ok(res) => res,
+            Err(_) => panic!("compare_file hung indefinitely when attempting to open a FIFO!"),
+        };
+
+        // If a thread blocks, it'll hold a handle to the FIFO, which is tricky to clean up.
+        // But since we panic on hang, the test runner will fail the test.
+
+        assert!(result.is_err(), "compare_file should fail for FIFO");
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(err.to_string(), "Destination is not a regular file");
     }
 
     #[test]

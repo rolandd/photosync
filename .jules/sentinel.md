@@ -17,3 +17,13 @@
 **Vulnerability:** A failed `io::copy` inside `atomic_copy_file` left partially written files at the destination. Because the pipeline handles `io::ErrorKind::AlreadyExists` by treating it as a duplicate, a failed copy attempt would permanently prevent the photo from being synced on subsequent runs (creating a persistent DoS/data loss condition).
 **Learning:** System APIs like `io::copy` do not guarantee state rollback on failure. When implementing atomic file operations with `create_new(true)`, the application is responsible for cleaning up artifacts if the operation aborts mid-stream.
 **Prevention:** Always wrap `io::copy` in a `match` block. On `Err`, explicitly `drop()` the destination file handle (crucial for Windows where open files are locked) and remove the incomplete file using `fs::remove_file()`.
+
+## 2026-04-04 - Denial of Service (DoS) via Special Files in compare_file
+**Vulnerability:** A Denial of Service (DoS) vulnerability was identified in `FileComparator::compare_file`. When checking for duplicate files, the function opened the destination path without verifying it was a regular file. If an attacker created a FIFO or other blocking special device at the expected destination path, the application would hang indefinitely when attempting to open it for comparison.
+**Learning:** Checking the file size with `fs::metadata` is not enough to guarantee safety, as special files can report sizes but still block on `File::open()`. Unbounded blocking I/O calls can easily be abused to freeze background worker threads in rust.
+**Prevention:** Always check if a path corresponds to a regular file using `meta.is_file()` before calling `File::open()`, especially when interacting with files that may be created or modified externally.
+
+## 2026-04-04 - Incomplete Terminal Sanitization in report_error
+**Vulnerability:** Terminal injection was possible through error messages emitted by the pipeline `report_error` function. While some filenames were sanitized elsewhere, the combination of raw filenames and raw OS error messages (which could contain their own path reflections) were sent to the progress channel and displayed directly on the terminal.
+**Learning:** `paths::sanitize_str` must be applied not just to filenames, but to any user-controlled string or system error message that might wrap user-controlled strings, just before display or entry into the UI event loop.
+**Prevention:** Use `impl AsRef<str>` in logging/reporting helpers to apply centralized terminal sanitization (`paths::sanitize_str`) to both the subject and the contextual error message to guarantee escape sequences are stripped before rendering.
