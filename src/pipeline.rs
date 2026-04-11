@@ -177,6 +177,16 @@ impl FileComparator {
     fn compare_file(&mut self, file1: &mut File, size1: u64, path2: &Path) -> io::Result<bool> {
         // Fast path: compare sizes first
         let meta2 = fs::metadata(path2)?;
+
+        // Security check: ensure the destination is a regular file.
+        // This prevents DoS by blocking on special files (like FIFOs).
+        if !meta2.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Destination is not a regular file",
+            ));
+        }
+
         if size1 != meta2.len() {
             return Ok(false);
         }
@@ -484,6 +494,33 @@ mod tests {
         let mut f1 = File::open(&file1).unwrap();
         let len = f1.metadata().unwrap().len();
         assert!(!comparator.compare_file(&mut f1, len, &file2).unwrap());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_compare_file_rejects_fifo() {
+        use std::process::Command;
+        let dir = tempfile::tempdir().unwrap();
+        let fifo_path = dir.path().join("test_fifo");
+        let file1 = create_test_file(dir.path(), "file1.txt", b""); // size 0
+
+        let status = Command::new("mkfifo")
+            .arg(&fifo_path)
+            .status()
+            .expect("failed to execute mkfifo");
+        assert!(status.success(), "mkfifo failed");
+
+        let mut comparator = FileComparator::new();
+        let mut f1 = File::open(&file1).unwrap();
+
+        // This will hang indefinitely if compare_file doesn't check is_file(),
+        // because we haven't spawned a background thread to write to the FIFO.
+        let result = comparator.compare_file(&mut f1, 0, &fifo_path);
+
+        assert!(result.is_err(), "compare_file should fail for FIFO");
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(err.to_string(), "Destination is not a regular file");
     }
 
     #[test]
