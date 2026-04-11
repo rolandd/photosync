@@ -219,6 +219,8 @@ impl FileComparator {
     }
 }
 
+use std::ffi::OsString;
+
 /// Discovers all files under source directories.
 fn file_walker(
     source_dir: PathBuf,
@@ -233,12 +235,17 @@ fn file_walker(
         &shutdown,
     );
 
+    // Performance optimization: Pre-allocate OsStrings for direct comparison.
+    // This avoids calling `to_string_lossy()` on every entry during traversal,
+    // which incurs UTF-8 validation and memory allocation overhead.
+    let exclude_os_strings: Vec<OsString> = exclude_dirs.into_iter().map(OsString::from).collect();
+
     let walker = WalkDir::new(&source_dir)
         .follow_links(false)
         .into_iter()
         .filter_entry(move |e: &walkdir::DirEntry| {
-            let name = e.file_name().to_string_lossy();
-            !exclude_dirs.iter().any(|ex| name == *ex)
+            let name = e.file_name();
+            !exclude_os_strings.iter().any(|ex| name == ex)
         });
 
     for walk_entry in walker {
