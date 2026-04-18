@@ -191,6 +191,7 @@ impl App {
                 duration,
             } => {
                 self.current_file = None;
+                self.files_to_copy = self.files_to_copy.saturating_sub(1);
 
                 // Add to rolling window for speed calculation
                 if self.recent_copies.len() >= SPEED_WINDOW_SIZE {
@@ -217,6 +218,7 @@ impl App {
                 );
             }
             ProgressMsg::CopyError { filename, error } => {
+                self.files_to_copy = self.files_to_copy.saturating_sub(1);
                 self.add_recent(
                     format!("✗ {}  {}", filename, error),
                     Style::default().fg(Color::Red),
@@ -394,9 +396,25 @@ fn ui(frame: &mut Frame, app: &App) {
     };
     let elapsed = app.total_time.unwrap_or_else(|| app.start_time.elapsed());
     let time_str = format_duration(elapsed);
+
+    let eta_text =
+        if app.scan_complete && !app.done && !app.recent_copies.is_empty() && app.files_to_copy > 0
+        {
+            let total_dur: std::time::Duration = app.recent_copies.iter().map(|(_, d)| *d).sum();
+            let avg_dur = total_dur.as_secs_f64() / app.recent_copies.len() as f64;
+            let eta_secs = avg_dur * app.files_to_copy as f64;
+            format!(
+                "    ETA: {}",
+                format_duration(std::time::Duration::from_secs_f64(eta_secs))
+            )
+        } else {
+            "".to_string()
+        };
+
     let stats_text = format!(
-        "Time: {}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
+        "Time: {}{}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
         time_str,
+        eta_text,
         speed_text,
         progress::format_bytes(app.summary.bytes_copied),
         app.summary.files_skipped
