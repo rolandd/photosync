@@ -177,6 +177,9 @@ impl FileComparator {
     fn compare_file(&mut self, file1: &mut File, size1: u64, path2: &Path) -> io::Result<bool> {
         // Fast path: compare sizes first
         let meta2 = fs::metadata(path2)?;
+        if !meta2.is_file() {
+            return Ok(false);
+        }
         if size1 != meta2.len() {
             return Ok(false);
         }
@@ -287,6 +290,10 @@ fn file_processor(
         // Check shutdown flag at the start of each iteration
         if shutdown.load(Ordering::Acquire) {
             return;
+        }
+
+        if !std::fs::metadata(&path).is_ok_and(|m| m.is_file()) {
+            continue;
         }
 
         let Ok(ms) = MediaSource::file_path(&path) else {
@@ -930,22 +937,9 @@ fn file_handler(
         // Use sanitized filename for destination to prevent creating files with control characters
         let dest_path = dest_dir.join(&filename_str);
 
-        // Open source file early to reuse handle and avoid double open/stat
-        let mut src_file = match File::open(&info.path) {
-            Ok(f) => f,
-            Err(e) => {
-                report_error(
-                    &progress_tx,
-                    info.path.to_string(),
-                    format!("Failed to open source: {e}"),
-                    &shutdown,
-                );
-                continue;
-            }
-        };
-
-        // Use fstat (cheap) to get size and check if regular file
-        let src_meta = match src_file.metadata() {
+        // Use stat to get size and check if regular file before opening
+        // to prevent DoS from blocking I/O on special files (like FIFOs).
+        let src_meta = match fs::metadata(&info.path) {
             Ok(m) => m,
             Err(e) => {
                 report_error(
@@ -969,6 +963,20 @@ fn file_handler(
             continue;
         }
         let size = src_meta.len();
+
+        // Open source file to reuse handle
+        let mut src_file = match File::open(&info.path) {
+            Ok(f) => f,
+            Err(e) => {
+                report_error(
+                    &progress_tx,
+                    info.path.to_string(),
+                    format!("Failed to open source: {e}"),
+                    &shutdown,
+                );
+                continue;
+            }
+        };
 
         // Helper to handle duplicate files
         // We define it inside the loop to capture `info`, `filename_str`, `progress_tx`, `shutdown`

@@ -17,3 +17,8 @@
 **Vulnerability:** A failed `io::copy` inside `atomic_copy_file` left partially written files at the destination. Because the pipeline handles `io::ErrorKind::AlreadyExists` by treating it as a duplicate, a failed copy attempt would permanently prevent the photo from being synced on subsequent runs (creating a persistent DoS/data loss condition).
 **Learning:** System APIs like `io::copy` do not guarantee state rollback on failure. When implementing atomic file operations with `create_new(true)`, the application is responsible for cleaning up artifacts if the operation aborts mid-stream.
 **Prevention:** Always wrap `io::copy` in a `match` block. On `Err`, explicitly `drop()` the destination file handle (crucial for Windows where open files are locked) and remove the incomplete file using `fs::remove_file()`.
+
+## 2024-04-18 - Prevent DoS from blocking I/O on special files
+**Vulnerability:** A Time-of-Check Time-of-Use (TOCTOU) / Blocking I/O vulnerability existed where `File::open` was called on unsanitized file paths before `fs::metadata` checked if the file was a regular file (e.g., in `file_handler`, `file_processor`, and `FileComparator::compare_file`). If the file was a FIFO or device, `File::open` would block indefinitely.
+**Learning:** Checking `is_file()` *after* `File::open()` is too late, as opening special files like FIFOs can block the calling thread or cause DoS.
+**Prevention:** Always use `fs::metadata` or `fs::symlink_metadata` to verify that a file path points to a regular file *before* attempting to open it, especially when iterating over files from a user-controlled or external source.
