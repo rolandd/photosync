@@ -181,6 +181,11 @@ impl FileComparator {
             return Ok(false);
         }
 
+        // Security check: Ensure we don't open a FIFO/device file, which could block indefinitely.
+        if !meta2.is_file() {
+            return Ok(false);
+        }
+
         // Ensure buffers are the correct size
         if self.buf1.len() != FILE_COMPARE_CHUNK_SIZE {
             self.buf1.resize(FILE_COMPARE_CHUNK_SIZE, 0);
@@ -448,6 +453,31 @@ mod tests {
             .write_all(content)
             .unwrap();
         path
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_compare_file_rejects_fifo() {
+        use std::process::Command;
+
+        let dir = tempfile::tempdir().unwrap();
+        let file1 = create_test_file(dir.path(), "file1.txt", b"");
+        let fifo_path = dir.path().join("test_fifo");
+
+        let status = Command::new("mkfifo")
+            .arg(&fifo_path)
+            .status()
+            .expect("failed to execute mkfifo");
+        assert!(status.success(), "mkfifo failed");
+
+        let mut comparator = FileComparator::new();
+        let mut f1 = File::open(&file1).unwrap();
+        // Since both have length 0, size check will pass, but is_file() will reject the FIFO
+        let len = 0;
+
+        // This should not block, and return Ok(false)
+        let result = comparator.compare_file(&mut f1, len, &fifo_path).unwrap();
+        assert!(!result);
     }
 
     #[test]
