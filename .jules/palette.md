@@ -9,3 +9,7 @@
 ## 2026-02-18 - Elapsed Time Indicator
 **Learning:** For long-running batch operations, users need a sense of temporal scale to estimate completion or detect hangs.
 **Action:** Display a wall-clock timer (MM:SS) that starts immediately and freezes upon completion.
+
+## 2026-05-02 - TUI Elapsed Time Indicator and ETA
+**Learning:** For long-running batch operations, users need a sense of temporal scale to estimate completion or detect hangs. An ETA is very useful to tell the user when the application will be done.
+**Action:** Display a wall-clock timer (MM:SS) that starts immediately and freezes upon completion, and compute and display ETA based on the average duration of files in the rolling window if the scan is complete.
