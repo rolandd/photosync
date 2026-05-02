@@ -233,12 +233,19 @@ fn file_walker(
         &shutdown,
     );
 
+    // Performance Optimization: Convert excludes to OsString once
+    // This avoids string allocations and UTF-8 validation (`to_string_lossy()`) on every directory entry.
+    let exclude_os_strings: Vec<std::ffi::OsString> = exclude_dirs
+        .into_iter()
+        .map(std::ffi::OsString::from)
+        .collect();
+
     let walker = WalkDir::new(&source_dir)
         .follow_links(false)
         .into_iter()
         .filter_entry(move |e: &walkdir::DirEntry| {
-            let name = e.file_name().to_string_lossy();
-            !exclude_dirs.iter().any(|ex| name == *ex)
+            let name = e.file_name();
+            !exclude_os_strings.iter().any(|ex| name == ex)
         });
 
     for walk_entry in walker {
