@@ -140,15 +140,15 @@ fn send_progress(tx: &SyncSender<ProgressMsg>, msg: ProgressMsg, shutdown: &Atom
 /// Helper to report errors to the UI.
 fn report_error(
     tx: &SyncSender<ProgressMsg>,
-    filename: impl Into<String>,
-    error: impl Into<String>,
+    filename: impl AsRef<str>,
+    error: impl AsRef<str>,
     shutdown: &AtomicBool,
 ) {
     send_progress(
         tx,
         ProgressMsg::CopyError {
-            filename: filename.into(),
-            error: error.into(),
+            filename: paths::sanitize_str(filename.as_ref()),
+            error: paths::sanitize_str(error.as_ref()),
         },
         shutdown,
     );
