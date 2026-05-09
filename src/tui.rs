@@ -142,6 +142,25 @@ impl App {
         self.recent_items.push_front(RecentItem { text, style });
     }
 
+    /// Calculate estimated time remaining based on average recent copy duration and remaining files.
+    fn eta(&self) -> Option<Duration> {
+        if self.recent_copies.is_empty() || !self.scan_complete || self.done {
+            return None;
+        }
+
+        let total_duration: Duration = self.recent_copies.iter().map(|(_, d)| *d).sum();
+        let avg_duration = total_duration.div_f64(self.recent_copies.len() as f64);
+
+        let remaining_files = self
+            .files_with_exif
+            .saturating_sub(self.summary.total_processed());
+        if remaining_files == 0 {
+            return None;
+        }
+
+        Some(avg_duration.mul_f64(remaining_files as f64))
+    }
+
     /// Calculate speed in bytes per second from recent copies.
     fn speed_bytes_per_sec(&self) -> f64 {
         if self.recent_copies.is_empty() {
@@ -393,9 +412,14 @@ fn ui(frame: &mut Frame, app: &App) {
         "-".to_string()
     };
     let elapsed = app.total_time.unwrap_or_else(|| app.start_time.elapsed());
-    let time_str = format_duration(elapsed);
+    let mut time_str = format!("Time: {}", format_duration(elapsed));
+
+    if let Some(eta_duration) = app.eta() {
+        time_str.push_str(&format!(" (ETA: {})", format_duration(eta_duration)));
+    }
+
     let stats_text = format!(
-        "Time: {}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
+        "{}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
         time_str,
         speed_text,
         progress::format_bytes(app.summary.bytes_copied),
@@ -535,6 +559,37 @@ mod tests {
             .push_back((10 * 1024 * 1024, Duration::from_secs(1)));
         let speed = app.speed_bytes_per_sec();
         assert!((speed - 10485760.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_eta_calculation() {
+        let mut app = App::default();
+
+        // Setup state for ETA to be valid
+        app.scan_complete = true;
+        app.done = false;
+        app.files_with_exif = 100;
+
+        // 10 files processed, 90 remaining
+        app.summary.files_copied = 10;
+
+        // Average duration is 2 seconds (3 files taking 1s, 2s, 3s)
+        app.recent_copies.push_back((1024, Duration::from_secs(1)));
+        app.recent_copies.push_back((1024, Duration::from_secs(2)));
+        app.recent_copies.push_back((1024, Duration::from_secs(3)));
+
+        // ETA should be 90 files * 2 seconds/file = 180 seconds
+        let eta = app.eta();
+        assert!(eta.is_some());
+        assert_eq!(eta.unwrap().as_secs(), 180);
+
+        // Test edge cases where ETA should be None
+        app.scan_complete = false;
+        assert!(app.eta().is_none());
+
+        app.scan_complete = true;
+        app.done = true;
+        assert!(app.eta().is_none());
     }
 
     #[test]
