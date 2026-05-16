@@ -17,3 +17,7 @@
 **Vulnerability:** A failed `io::copy` inside `atomic_copy_file` left partially written files at the destination. Because the pipeline handles `io::ErrorKind::AlreadyExists` by treating it as a duplicate, a failed copy attempt would permanently prevent the photo from being synced on subsequent runs (creating a persistent DoS/data loss condition).
 **Learning:** System APIs like `io::copy` do not guarantee state rollback on failure. When implementing atomic file operations with `create_new(true)`, the application is responsible for cleaning up artifacts if the operation aborts mid-stream.
 **Prevention:** Always wrap `io::copy` in a `match` block. On `Err`, explicitly `drop()` the destination file handle (crucial for Windows where open files are locked) and remove the incomplete file using `fs::remove_file()`.
+## 2024-05-16 - FileComparator DoS via Unchecked Destination File Type
+**Vulnerability:** `FileComparator::compare_file` opened the destination path (`path2`) without checking if it was a regular file.
+**Learning:** This missing check could cause the worker thread to hang indefinitely if a user or attacker created a FIFO or other blocking device file at the destination path before comparison.
+**Prevention:** Always verify file types using `fs::metadata(path)?.is_file()` before opening user-controlled or external paths, especially in background worker threads where a hang causes a Denial of Service (DoS).
