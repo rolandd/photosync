@@ -142,6 +142,23 @@ impl App {
         self.recent_items.push_front(RecentItem { text, style });
     }
 
+    /// Calculate the ETA (Estimated Time of Arrival) based on recent copy durations.
+    fn eta(&self) -> Option<Duration> {
+        if self.scan_complete && !self.done && !self.recent_copies.is_empty() {
+            let total_duration = self
+                .recent_copies
+                .iter()
+                .fold(Duration::ZERO, |acc, (_, d)| acc + *d);
+            let avg_duration = total_duration.as_secs_f64() / self.recent_copies.len() as f64;
+            let remaining = self
+                .files_with_exif
+                .saturating_sub(self.summary.total_processed());
+            Some(Duration::from_secs_f64(avg_duration * remaining as f64))
+        } else {
+            None
+        }
+    }
+
     /// Calculate speed in bytes per second from recent copies.
     fn speed_bytes_per_sec(&self) -> f64 {
         if self.recent_copies.is_empty() {
@@ -394,9 +411,15 @@ fn ui(frame: &mut Frame, app: &App) {
     };
     let elapsed = app.total_time.unwrap_or_else(|| app.start_time.elapsed());
     let time_str = format_duration(elapsed);
+    let eta_str = if let Some(eta) = app.eta() {
+        format!("    ETA: {}", format_duration(eta))
+    } else {
+        String::new()
+    };
     let stats_text = format!(
-        "Time: {}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
+        "Time: {}{}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
         time_str,
+        eta_str,
         speed_text,
         progress::format_bytes(app.summary.bytes_copied),
         app.summary.files_skipped
@@ -710,6 +733,30 @@ mod tests {
         app.handle_message(ProgressMsg::Done);
         assert!(app.done);
         assert!(app.total_time.is_some());
+    }
+
+    #[test]
+    fn test_eta_calculation() {
+        let mut app = App::default();
+        app.scan_complete = true;
+        app.done = false;
+        app.files_with_exif = 100;
+        app.summary.files_copied = 10;
+        app.summary.files_skipped = 0;
+        app.summary.files_errored = 0;
+
+        // 1 file took 2 seconds
+        app.recent_copies.push_back((1024, Duration::from_secs(2)));
+
+        let _remaining = 90; // 100 - 10
+        let expected_eta = Duration::from_secs_f64(2.0 * 90.0);
+
+        assert_eq!(app.eta(), Some(expected_eta));
+
+        // 2 files, 2s and 4s -> avg 3s
+        app.recent_copies.push_back((2048, Duration::from_secs(4)));
+        let expected_eta_2 = Duration::from_secs_f64(3.0 * 90.0);
+        assert_eq!(app.eta(), Some(expected_eta_2));
     }
 
     #[test]
