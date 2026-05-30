@@ -235,12 +235,17 @@ fn file_walker(
         &shutdown,
     );
 
+    // Pre-allocate OsStrings for direct comparison to avoid to_string_lossy allocations
+    // and UTF-8 validation overhead on every directory entry.
+    let exclude_os_strings: Vec<std::ffi::OsString> =
+        exclude_dirs.iter().map(std::ffi::OsString::from).collect();
+
     let walker = WalkDir::new(&source_dir)
         .follow_links(false)
         .into_iter()
         .filter_entry(move |e: &walkdir::DirEntry| {
-            let name = e.file_name().to_string_lossy();
-            !exclude_dirs.iter().any(|ex| name == *ex)
+            let name = e.file_name();
+            !exclude_os_strings.iter().any(|ex| name == ex.as_os_str())
         });
 
     for walk_entry in walker {
