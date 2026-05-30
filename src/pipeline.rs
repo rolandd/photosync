@@ -146,11 +146,13 @@ fn report_error(
     error: impl Into<String>,
     shutdown: &AtomicBool,
 ) {
+    let filename_str = filename.into();
+    let error_str = error.into();
     send_progress(
         tx,
         ProgressMsg::CopyError {
-            filename: filename.into(),
-            error: error.into(),
+            filename: paths::sanitize_str(&filename_str),
+            error: paths::sanitize_str(&error_str),
         },
         shutdown,
     );
