@@ -365,7 +365,7 @@ fn ui(frame: &mut Frame, app: &App) {
     };
     let current_style = if app.done {
         Style::default()
-            .fg(Color::Green)
+            .fg(get_status_color(app))
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(Color::White)
@@ -380,7 +380,11 @@ fn ui(frame: &mut Frame, app: &App) {
     let percentage = (progress_ratio * 100.0).min(100.0);
 
     let gauge = Gauge::default()
-        .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
+        .gauge_style(
+            Style::default()
+                .fg(get_status_color(app))
+                .bg(Color::DarkGray),
+        )
         .ratio(progress_ratio.min(1.0))
         .label(format!("{} / {} ({:.0}%)", processed, total, percentage));
     frame.render_widget(gauge, chunks[2]);
@@ -424,7 +428,7 @@ fn ui(frame: &mut Frame, app: &App) {
             .style(
                 Style::default()
                     .fg(Color::Black)
-                    .bg(Color::Green)
+                    .bg(get_status_color(app))
                     .add_modifier(Modifier::BOLD),
             )
             .alignment(Alignment::Center);
