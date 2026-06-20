@@ -162,6 +162,27 @@ impl App {
         }
     }
 
+    fn eta(&self) -> Option<Duration> {
+        if !self.scan_complete || self.done || self.recent_copies.is_empty() {
+            return None;
+        }
+
+        let remaining_files = self
+            .files_with_exif
+            .saturating_sub(self.summary.total_processed());
+
+        if remaining_files == 0 {
+            return Some(Duration::ZERO);
+        }
+
+        let total_duration: Duration = self.recent_copies.iter().map(|(_, d)| *d).sum();
+        let avg_duration = total_duration.as_secs_f64() / self.recent_copies.len() as f64;
+
+        Some(Duration::from_secs_f64(
+            avg_duration * remaining_files as f64,
+        ))
+    }
+
     fn handle_message(&mut self, msg: ProgressMsg) {
         // Update common summary statistics; sets done flag on Done message
         self.done = self.summary.update(&msg);
@@ -380,7 +401,11 @@ fn ui(frame: &mut Frame, app: &App) {
     let percentage = (progress_ratio * 100.0).min(100.0);
 
     let gauge = Gauge::default()
-        .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
+        .gauge_style(
+            Style::default()
+                .fg(get_status_color(app))
+                .bg(Color::DarkGray),
+        )
         .ratio(progress_ratio.min(1.0))
         .label(format!("{} / {} ({:.0}%)", processed, total, percentage));
     frame.render_widget(gauge, chunks[2]);
@@ -394,9 +419,14 @@ fn ui(frame: &mut Frame, app: &App) {
     };
     let elapsed = app.total_time.unwrap_or_else(|| app.start_time.elapsed());
     let time_str = format_duration(elapsed);
+    let eta_str = app
+        .eta()
+        .map(|d| format!("    ETA: {}", format_duration(d)))
+        .unwrap_or_default();
     let stats_text = format!(
-        "Time: {}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
+        "Time: {}{}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
         time_str,
+        eta_str,
         speed_text,
         progress::format_bytes(app.summary.bytes_copied),
         app.summary.files_skipped
@@ -424,7 +454,7 @@ fn ui(frame: &mut Frame, app: &App) {
             .style(
                 Style::default()
                     .fg(Color::Black)
-                    .bg(Color::Green)
+                    .bg(get_status_color(app))
                     .add_modifier(Modifier::BOLD),
             )
             .alignment(Alignment::Center);
@@ -710,6 +740,37 @@ mod tests {
         app.handle_message(ProgressMsg::Done);
         assert!(app.done);
         assert!(app.total_time.is_some());
+    }
+
+    #[test]
+    fn test_eta_calculation() {
+        let mut app = App::default();
+
+        // No ETA before scan is complete
+        assert!(app.eta().is_none());
+
+        // Scan complete, but no recent copies
+        app.scan_complete = true;
+        app.files_with_exif = 10;
+        assert!(app.eta().is_none());
+
+        // Add some copies (average 2 seconds per file)
+        app.recent_copies.push_back((1024, Duration::from_secs(2)));
+        app.recent_copies.push_back((1024, Duration::from_secs(2)));
+
+        // No ETA if app is done
+        app.done = true;
+        assert!(app.eta().is_none());
+
+        app.done = false;
+
+        // Total 10 files, 2 processed => 8 remaining. Average 2s/file => 16s ETA
+        app.summary.files_copied = 2;
+        assert_eq!(app.eta(), Some(Duration::from_secs(16)));
+
+        // Total 10 files, 10 processed => 0 remaining => 0s ETA
+        app.summary.files_copied = 10;
+        assert_eq!(app.eta(), Some(Duration::from_secs(0)));
     }
 
     #[test]
