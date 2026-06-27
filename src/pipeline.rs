@@ -179,6 +179,16 @@ impl FileComparator {
     fn compare_file(&mut self, file1: &mut File, size1: u64, path2: &Path) -> io::Result<bool> {
         // Fast path: compare sizes first
         let meta2 = fs::metadata(path2)?;
+
+        // Security check: ensure the destination is a regular file.
+        // Opening special files like FIFOs can block indefinitely (DoS risk).
+        if !meta2.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Destination is not a regular file",
+            ));
+        }
+
         if size1 != meta2.len() {
             return Ok(false);
         }
@@ -816,6 +826,41 @@ mod tests {
         let err = result.unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(err.to_string(), "Source is not a regular file");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_compare_file_rejects_fifo() {
+        use std::process::Command;
+
+        let dir = tempfile::tempdir().unwrap();
+        let fifo_path = dir.path().join("test_fifo");
+        let normal_file_path = dir.path().join("normal_file.txt");
+
+        // Create a regular file with size 0
+        File::create(&normal_file_path).unwrap();
+
+        // Create FIFO using mkfifo command
+        let status = Command::new("mkfifo")
+            .arg(&fifo_path)
+            .status()
+            .expect("failed to execute mkfifo");
+        assert!(status.success(), "mkfifo failed");
+
+        let mut file1 = File::open(&normal_file_path).unwrap();
+        let size1 = file1.metadata().unwrap().len();
+
+        let mut comparator = FileComparator::new();
+
+        // Attempt to compare with the FIFO.
+        // This should fail immediately because it's not a regular file.
+        // If the vulnerability is present, this will block indefinitely.
+        let result = comparator.compare_file(&mut file1, size1, &fifo_path);
+
+        assert!(result.is_err(), "compare_file should fail for FIFO");
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(err.to_string(), "Destination is not a regular file");
     }
 
     struct FailingReader {
