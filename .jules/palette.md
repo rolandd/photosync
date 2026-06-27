@@ -9,3 +9,7 @@
 ## 2026-02-18 - Elapsed Time Indicator
 **Learning:** For long-running batch operations, users need a sense of temporal scale to estimate completion or detect hangs.
 **Action:** Display a wall-clock timer (MM:SS) that starts immediately and freezes upon completion.
+
+## 2026-02-19 - TUI Status Color Consistency
+**Learning:** Using consistent status colors across multiple UI elements (like progress bars and footer prompts) provides a more cohesive and easily understandable interface state.
+**Action:** Always dynamically use the application's overall status color for components like progress bar foregrounds and footer backgrounds, rather than hardcoding colors.
