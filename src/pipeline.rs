@@ -179,6 +179,16 @@ impl FileComparator {
     fn compare_file(&mut self, file1: &mut File, size1: u64, path2: &Path) -> io::Result<bool> {
         // Fast path: compare sizes first
         let meta2 = fs::metadata(path2)?;
+
+        // Security check: ensure we are comparing against a regular file.
+        // This prevents blocking on special files like FIFOs or device nodes.
+        if !meta2.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Destination is not a regular file",
+            ));
+        }
+
         if size1 != meta2.len() {
             return Ok(false);
         }
@@ -770,6 +780,35 @@ mod tests {
             0o600,
             "Owner should have read/write permissions"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_compare_file_rejects_fifo() {
+        use std::process::Command;
+
+        let dir = tempfile::tempdir().unwrap();
+        let fifo_path = dir.path().join("test_fifo_compare");
+        let file1_path = create_test_file(dir.path(), "file1.txt", b""); // 0 bytes
+
+        // Create FIFO using mkfifo command
+        let status = Command::new("mkfifo")
+            .arg(&fifo_path)
+            .status()
+            .expect("failed to execute mkfifo");
+        assert!(status.success(), "mkfifo failed");
+
+        let mut comparator = FileComparator::new();
+        let mut f1 = File::open(&file1_path).unwrap();
+        let len = f1.metadata().unwrap().len();
+
+        // This should fail immediately and not block
+        let result = comparator.compare_file(&mut f1, len, &fifo_path);
+
+        assert!(result.is_err(), "compare_file should fail for FIFO");
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(err.to_string(), "Destination is not a regular file");
     }
 
     #[test]
