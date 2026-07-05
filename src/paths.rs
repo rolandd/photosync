@@ -17,6 +17,9 @@ use std::path::{Path, PathBuf};
 /// - Newlines, tabs, carriage returns
 /// - Other control characters
 pub fn sanitize_str(s: &str) -> String {
+    if !s.chars().any(|c| c.is_control()) {
+        return s.to_string();
+    }
     s.chars()
         .map(|c| if c.is_control() { '?' } else { c })
         .collect()
