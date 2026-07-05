@@ -15,7 +15,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use chrono::NaiveDate;
-use nom_exif::{ExifIter, ExifTag, MediaParser, MediaSource};
+use nom_exif::{ExifIter, ExifTag, MediaKind, MediaParser, MediaSource, TagOrCode};
 use walkdir::WalkDir;
 
 use crate::config::Config;
@@ -149,7 +149,7 @@ fn report_error(
     send_progress(
         tx,
         ProgressMsg::CopyError {
-            filename: filename.into(),
+            filename: paths::sanitize_str(&filename.into()),
             error: error.into(),
         },
         shutdown,
@@ -265,7 +265,7 @@ fn file_walker(
                     &progress_tx,
                     ProgressMsg::ScanError {
                         path: SourcePath::new(path),
-                        error: paths::sanitize_str(&e.to_string()),
+                        error: e.to_string(),
                     },
                     &shutdown,
                 );
@@ -343,28 +343,30 @@ fn file_processor(
         let result = (|file: &mut File| {
             let ms = MediaSource::seekable(file).ok()?;
 
-            if !ms.has_exif() {
+            if ms.kind() != MediaKind::Image {
                 return None;
             }
 
-            let iter: ExifIter = parser.parse(ms).ok()?;
+            let iter: ExifIter = parser.parse_exif(ms).ok()?;
 
             let mut model = None;
             let mut date = None;
 
-            for mut entry in iter {
-                if let Some(tag) = entry.tag() {
+            for entry in iter {
+                if let TagOrCode::Tag(tag) = entry.tag() {
                     match tag {
                         ExifTag::Model => {
                             model = entry
-                                .take_value()
+                                .into_result()
+                                .ok()
                                 .and_then(|v| v.as_str().map(paths::sanitize_str));
                         }
                         ExifTag::DateTimeOriginal => {
                             date = entry
-                                .take_value()
-                                .and_then(|v| v.as_time_components())
-                                .map(|(ndt, _offset)| ndt.date());
+                                .into_result()
+                                .ok()
+                                .and_then(|v| v.as_datetime())
+                                .map(|dt| dt.into_naive().date());
                         }
                         _ => {}
                     }
