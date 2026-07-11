@@ -9,3 +9,7 @@
 ## 2026-02-18 - Elapsed Time Indicator
 **Learning:** For long-running batch operations, users need a sense of temporal scale to estimate completion or detect hangs.
 **Action:** Display a wall-clock timer (MM:SS) that starts immediately and freezes upon completion.
+
+## 2026-02-18 - Elapsed Time and ETA
+**Learning:** For long-running batch operations, showing both elapsed time and an Estimated Time of Arrival (ETA) greatly improves UX by setting accurate expectations and providing a clear sense of temporal scale.
+**Action:** Always include an ETA indicator when batch processing tasks have predictable throughput.
