@@ -17,3 +17,8 @@
 **Vulnerability:** A failed `io::copy` inside `atomic_copy_file` left partially written files at the destination. Because the pipeline handles `io::ErrorKind::AlreadyExists` by treating it as a duplicate, a failed copy attempt would permanently prevent the photo from being synced on subsequent runs (creating a persistent DoS/data loss condition).
 **Learning:** System APIs like `io::copy` do not guarantee state rollback on failure. When implementing atomic file operations with `create_new(true)`, the application is responsible for cleaning up artifacts if the operation aborts mid-stream.
 **Prevention:** Always wrap `io::copy` in a `match` block. On `Err`, explicitly `drop()` the destination file handle (crucial for Windows where open files are locked) and remove the incomplete file using `fs::remove_file()`.
+
+## 2026-03-09 - Missing Dest Path Sanitization in `compare_file`
+**Vulnerability:** A missing check in `compare_file` meant that the destination path was assumed to be a regular file, which could allow checking against special files (like FIFOs or devices) resulting in blocked I/O threads and Denial of Service (DoS) in the `handler` thread.
+**Learning:** Always verify that destination file objects represent regular files using `meta.is_file()` before blindly opening and comparing them, similar to the existing safeguard for source files. Size checks (`meta.len() != size`) are insufficient for special files like pipes, which report size 0 but block.
+**Prevention:** Implement `meta2.is_file()` validation within `compare_file` alongside size checks.

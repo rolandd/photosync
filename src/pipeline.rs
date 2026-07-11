@@ -179,6 +179,12 @@ impl FileComparator {
     fn compare_file(&mut self, file1: &mut File, size1: u64, path2: &Path) -> io::Result<bool> {
         // Fast path: compare sizes first
         let meta2 = fs::metadata(path2)?;
+        if !meta2.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Destination is not a regular file",
+            ));
+        }
         if size1 != meta2.len() {
             return Ok(false);
         }
