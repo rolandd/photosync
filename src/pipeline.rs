@@ -179,6 +179,17 @@ impl FileComparator {
     fn compare_file(&mut self, file1: &mut File, size1: u64, path2: &Path) -> io::Result<bool> {
         // Fast path: compare sizes first
         let meta2 = fs::metadata(path2)?;
+
+        // Security: Ensure path2 is a regular file before attempting to open it.
+        // Size checks (meta.len()) are insufficient as special blocking files (like FIFOs)
+        // can report a size of 0. Opening a FIFO can block indefinitely, causing a DoS.
+        if !meta2.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Comparison target is not a regular file",
+            ));
+        }
+
         if size1 != meta2.len() {
             return Ok(false);
         }
@@ -500,6 +511,37 @@ mod tests {
             .write_all(content)
             .unwrap();
         path
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_compare_file_rejects_fifo() {
+        use std::process::Command;
+
+        let dir = tempfile::tempdir().unwrap();
+        let fifo_path = dir.path().join("test_fifo");
+        let file1 = create_test_file(dir.path(), "exists.txt", b""); // size 0 to match FIFO
+
+        // Create FIFO using mkfifo command
+        let status = Command::new("mkfifo")
+            .arg(&fifo_path)
+            .status()
+            .expect("failed to execute mkfifo");
+        assert!(status.success(), "mkfifo failed");
+
+        let mut comparator = FileComparator::new();
+        let mut f1 = File::open(&file1).unwrap();
+        let len = f1.metadata().unwrap().len();
+
+        // This should fail because it's not a regular file.
+        // We purposefully do not spawn a background thread to open the FIFO,
+        // so this will hang if the vulnerability (opening without checking is_file()) is present.
+        let result = comparator.compare_file(&mut f1, len, &fifo_path);
+
+        assert!(result.is_err(), "compare_file should fail for FIFO");
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(err.to_string(), "Comparison target is not a regular file");
     }
 
     #[test]
