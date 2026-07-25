@@ -179,6 +179,17 @@ impl FileComparator {
     fn compare_file(&mut self, file1: &mut File, size1: u64, path2: &Path) -> io::Result<bool> {
         // Fast path: compare sizes first
         let meta2 = fs::metadata(path2)?;
+
+        // Security check: ensure the destination is a regular file before attempting to open it.
+        // Special files (like FIFOs) can report a size of 0. If we attempt to open a FIFO without
+        // a writer, the open() call will block indefinitely, leading to a Denial of Service (DoS).
+        if !meta2.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Path is not a regular file",
+            ));
+        }
+
         if size1 != meta2.len() {
             return Ok(false);
         }
@@ -772,6 +783,39 @@ mod tests {
             0o600,
             "Owner should have read/write permissions"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_compare_file_rejects_fifo() {
+        use std::process::Command;
+
+        let dir = tempfile::tempdir().unwrap();
+        let file1_path = dir.path().join("source.bin");
+        // Create an empty file to compare against (size 0)
+        File::create(&file1_path).unwrap();
+
+        let fifo_path = dir.path().join("test_fifo");
+
+        let status = Command::new("mkfifo")
+            .arg(&fifo_path)
+            .status()
+            .expect("failed to execute mkfifo");
+        assert!(status.success(), "mkfifo failed");
+
+        let mut comparator = FileComparator::new();
+        let mut f1 = File::open(&file1_path).unwrap();
+
+        // size1 is 0. A FIFO might also report size 0.
+        // If it doesn't check is_file(), it will try to open() and block.
+        // We purposely do NOT spawn a writer thread here, so if it tries
+        // to open the FIFO, the test will hang and fail the timeout.
+        let result = comparator.compare_file(&mut f1, 0, &fifo_path);
+
+        assert!(result.is_err(), "compare_file should fail for FIFO");
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(err.to_string(), "Path is not a regular file");
     }
 
     #[test]
