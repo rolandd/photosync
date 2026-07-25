@@ -162,6 +162,25 @@ impl App {
         }
     }
 
+    /// Calculate Estimated Time of Arrival (ETA).
+    fn eta(&self) -> Option<Duration> {
+        if !self.scan_complete || self.done || self.recent_copies.is_empty() {
+            return None;
+        }
+
+        let remaining = self
+            .files_with_exif
+            .saturating_sub(self.summary.total_processed());
+        if remaining == 0 {
+            return Some(Duration::ZERO);
+        }
+
+        let total_duration: Duration = self.recent_copies.iter().map(|(_, d)| *d).sum();
+        let avg_duration = total_duration.as_secs_f64() / self.recent_copies.len() as f64;
+
+        Some(Duration::from_secs_f64(avg_duration * remaining as f64))
+    }
+
     fn handle_message(&mut self, msg: ProgressMsg) {
         // Update common summary statistics; sets done flag on Done message
         self.done = self.summary.update(&msg);
@@ -393,7 +412,17 @@ fn ui(frame: &mut Frame, app: &App) {
         "-".to_string()
     };
     let elapsed = app.total_time.unwrap_or_else(|| app.start_time.elapsed());
-    let time_str = format_duration(elapsed);
+
+    let time_str = if let Some(eta) = app.eta() {
+        format!(
+            "{} (ETA: {})",
+            format_duration(elapsed),
+            format_duration(eta)
+        )
+    } else {
+        format_duration(elapsed)
+    };
+
     let stats_text = format!(
         "Time: {}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
         time_str,
@@ -547,6 +576,54 @@ mod tests {
             .push_back((20 * 1024 * 1024, Duration::from_secs(2)));
         let speed = app.speed_bytes_per_sec();
         assert!((speed - 10485760.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_eta_not_ready() {
+        let app = App::default();
+        assert!(app.eta().is_none());
+    }
+
+    #[test]
+    fn test_eta_done() {
+        let mut app = App::default();
+        app.scan_complete = true;
+        app.done = true;
+        app.recent_copies.push_back((1024, Duration::from_secs(1)));
+        assert!(app.eta().is_none());
+    }
+
+    #[test]
+    fn test_eta_empty_copies() {
+        let mut app = App::default();
+        app.scan_complete = true;
+        assert!(app.eta().is_none());
+    }
+
+    #[test]
+    fn test_eta_zero_remaining() {
+        let mut app = App::default();
+        app.scan_complete = true;
+        app.files_with_exif = 5;
+        app.summary.files_copied = 5; // total_processed == 5
+        app.recent_copies.push_back((1024, Duration::from_secs(1)));
+
+        assert_eq!(app.eta(), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn test_eta_calculation() {
+        let mut app = App::default();
+        app.scan_complete = true;
+        app.files_with_exif = 10;
+        app.summary.files_copied = 5; // total_processed == 5, remaining == 5
+
+        // Avg duration = (1 + 3) / 2 = 2 secs per file
+        app.recent_copies.push_back((1024, Duration::from_secs(1)));
+        app.recent_copies.push_back((2048, Duration::from_secs(3)));
+
+        // ETA = 5 remaining * 2 secs = 10 secs
+        assert_eq!(app.eta(), Some(Duration::from_secs(10)));
     }
 
     #[test]
