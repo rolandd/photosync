@@ -9,3 +9,6 @@
 ## 2026-02-18 - Elapsed Time Indicator
 **Learning:** For long-running batch operations, users need a sense of temporal scale to estimate completion or detect hangs.
 **Action:** Display a wall-clock timer (MM:SS) that starts immediately and freezes upon completion.
+## 2023-11-09 - [Dynamic UI Coloring based on Overall Status]
+**Learning:** For terminal UI status indicators, static coloring misses an opportunity for accessible glanceability. The container border is highly visible and should immediately communicate success, warning, or error states.
+**Action:** Always implement dynamic styling for container borders using a function like `get_status_color` that returns `Green`, `Red`, `Yellow`, or `Cyan` depending on the state of completion and aggregated errors/warnings.
