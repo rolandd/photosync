@@ -179,6 +179,13 @@ impl FileComparator {
     fn compare_file(&mut self, file1: &mut File, size1: u64, path2: &Path) -> io::Result<bool> {
         // Fast path: compare sizes first
         let meta2 = fs::metadata(path2)?;
+
+        // Security check: ensure we are comparing against a regular file, not a device/pipe/socket.
+        // This prevents DoS vulnerabilities where opening a special file (like a FIFO) would block forever.
+        if !meta2.is_file() {
+            return Ok(false);
+        }
+
         if size1 != meta2.len() {
             return Ok(false);
         }
@@ -548,6 +555,37 @@ mod tests {
         let mut f1 = File::open(&file1).unwrap();
         let len = f1.metadata().unwrap().len();
         assert!(comparator.compare_file(&mut f1, len, &file2).is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_compare_file_rejects_fifo() {
+        use std::process::Command;
+
+        let dir = tempfile::tempdir().unwrap();
+        let fifo_path = dir.path().join("test_fifo");
+
+        // Create FIFO using mkfifo command
+        let status = Command::new("mkfifo")
+            .arg(&fifo_path)
+            .status()
+            .expect("failed to execute mkfifo");
+        assert!(status.success(), "mkfifo failed");
+
+        // Create an empty regular file for comparison
+        let file1 = create_test_file(dir.path(), "empty.txt", b"");
+        let mut f1 = File::open(&file1).unwrap();
+        let len = f1.metadata().unwrap().len();
+
+        let mut comparator = FileComparator::new();
+        // This should return Ok(false) immediately without blocking on opening the FIFO
+        let result = comparator.compare_file(&mut f1, len, &fifo_path);
+
+        assert!(result.is_ok());
+        assert!(
+            !result.unwrap(),
+            "FIFO should not be considered equal to regular file"
+        );
     }
 
     #[test]

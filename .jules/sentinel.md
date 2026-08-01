@@ -17,3 +17,8 @@
 **Vulnerability:** A failed `io::copy` inside `atomic_copy_file` left partially written files at the destination. Because the pipeline handles `io::ErrorKind::AlreadyExists` by treating it as a duplicate, a failed copy attempt would permanently prevent the photo from being synced on subsequent runs (creating a persistent DoS/data loss condition).
 **Learning:** System APIs like `io::copy` do not guarantee state rollback on failure. When implementing atomic file operations with `create_new(true)`, the application is responsible for cleaning up artifacts if the operation aborts mid-stream.
 **Prevention:** Always wrap `io::copy` in a `match` block. On `Err`, explicitly `drop()` the destination file handle (crucial for Windows where open files are locked) and remove the incomplete file using `fs::remove_file()`.
+
+## 2026-04-10 - DoS Vulnerability in File Comparison
+**Vulnerability:** A Denial of Service (DoS) vulnerability was identified in `compare_file` where it checked `meta.len()` without checking `meta.is_file()`. Special files like FIFOs report a length of 0. When compared against an empty file, the lengths match, causing the application to blindly call `File::open` on the FIFO, blocking the entire pipeline thread indefinitely until a writer connects.
+**Learning:** Checking file size is not sufficient before opening a file because special files can report zero length.
+**Prevention:** Always ensure a file is a regular file (e.g., via `meta.is_file()`) before opening it, especially when iterating over user-provided paths or during metadata comparisons, to prevent blocking on devices, sockets, or pipes.
