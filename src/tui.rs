@@ -142,6 +142,21 @@ impl App {
         self.recent_items.push_front(RecentItem { text, style });
     }
 
+    /// Calculate ETA (Estimated Time of Arrival) based on recent copy durations.
+    fn eta_duration(&self) -> Option<Duration> {
+        if !self.scan_complete || self.done || self.recent_copies.is_empty() {
+            return None;
+        }
+
+        let total_duration: Duration = self.recent_copies.iter().map(|(_, dur)| *dur).sum();
+        let avg_duration = total_duration / self.recent_copies.len() as u32;
+        let remaining = self
+            .files_with_exif
+            .saturating_sub(self.summary.total_processed());
+
+        Some(avg_duration * remaining as u32)
+    }
+
     /// Calculate speed in bytes per second from recent copies.
     fn speed_bytes_per_sec(&self) -> f64 {
         if self.recent_copies.is_empty() {
@@ -394,9 +409,16 @@ fn ui(frame: &mut Frame, app: &App) {
     };
     let elapsed = app.total_time.unwrap_or_else(|| app.start_time.elapsed());
     let time_str = format_duration(elapsed);
+    let eta_str = if let Some(eta) = app.eta_duration() {
+        format!("    ETA: {}", format_duration(eta))
+    } else {
+        String::new()
+    };
+
     let stats_text = format!(
-        "Time: {}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
+        "Time: {}{}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
         time_str,
+        eta_str,
         speed_text,
         progress::format_bytes(app.summary.bytes_copied),
         app.summary.files_skipped
@@ -519,6 +541,33 @@ mod tests {
         assert_eq!(app.summary.files_found, 0);
         assert_eq!(app.summary.files_copied, 0);
         assert!(!app.done);
+    }
+
+    #[test]
+    fn test_eta_duration() {
+        let mut app = App::default();
+
+        // No ETA initially
+        assert!(app.eta_duration().is_none());
+
+        // Setup base state for calculation
+        app.scan_complete = true;
+        app.files_with_exif = 100;
+        app.summary.files_copied = 50;
+
+        // Still none because recent_copies is empty
+        assert!(app.eta_duration().is_none());
+
+        // Add history: 2 copies taking 1s and 3s (avg 2s)
+        app.recent_copies.push_back((1024, Duration::from_secs(1)));
+        app.recent_copies.push_back((1024, Duration::from_secs(3)));
+
+        // ETA = 2s avg * (100 total - 50 processed) remaining = 100s
+        assert_eq!(app.eta_duration(), Some(Duration::from_secs(100)));
+
+        // ETA becomes None when done
+        app.done = true;
+        assert!(app.eta_duration().is_none());
     }
 
     #[test]
