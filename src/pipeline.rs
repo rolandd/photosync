@@ -179,7 +179,7 @@ impl FileComparator {
     fn compare_file(&mut self, file1: &mut File, size1: u64, path2: &Path) -> io::Result<bool> {
         // Fast path: compare sizes first
         let meta2 = fs::metadata(path2)?;
-        if size1 != meta2.len() {
+        if size1 != meta2.len() || !meta2.is_file() {
             return Ok(false);
         }
 
@@ -548,6 +548,31 @@ mod tests {
         let mut f1 = File::open(&file1).unwrap();
         let len = f1.metadata().unwrap().len();
         assert!(comparator.compare_file(&mut f1, len, &file2).is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_compare_file_rejects_fifo() {
+        use std::process::Command;
+
+        let dir = tempfile::tempdir().unwrap();
+        let fifo_path = dir.path().join("test_fifo");
+
+        let status = Command::new("mkfifo")
+            .arg(&fifo_path)
+            .status()
+            .expect("failed to execute mkfifo");
+        assert!(status.success(), "mkfifo failed");
+
+        let file1 = create_test_file(dir.path(), "file1.txt", b"");
+
+        let mut comparator = FileComparator::new();
+        let mut f1 = File::open(&file1).unwrap();
+        let len = f1.metadata().unwrap().len();
+
+        // This should return Ok(false) because it's not a file, and skip opening it.
+        // It should NOT block or hang.
+        assert!(!comparator.compare_file(&mut f1, len, &fifo_path).unwrap());
     }
 
     #[test]
