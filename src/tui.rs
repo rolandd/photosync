@@ -162,6 +162,19 @@ impl App {
         }
     }
 
+    fn eta(&self) -> Option<Duration> {
+        if !self.scan_complete || self.done || self.recent_copies.is_empty() {
+            return None;
+        }
+        let total_dur: Duration = self.recent_copies.iter().map(|(_, d)| *d).sum();
+        let avg_secs = total_dur.as_secs_f64() / self.recent_copies.len() as f64;
+        let remaining = self
+            .files_with_exif
+            .saturating_sub(self.summary.total_processed()) as f64;
+        let eta_secs = avg_secs * remaining;
+        Some(Duration::from_secs_f64(eta_secs))
+    }
+
     fn handle_message(&mut self, msg: ProgressMsg) {
         // Update common summary statistics; sets done flag on Done message
         self.done = self.summary.update(&msg);
@@ -394,9 +407,15 @@ fn ui(frame: &mut Frame, app: &App) {
     };
     let elapsed = app.total_time.unwrap_or_else(|| app.start_time.elapsed());
     let time_str = format_duration(elapsed);
+    let eta_text = if let Some(eta) = app.eta() {
+        format!("    ETA: {}", format_duration(eta))
+    } else {
+        String::new()
+    };
     let stats_text = format!(
-        "Time: {}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
+        "Time: {}{}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
         time_str,
+        eta_text,
         speed_text,
         progress::format_bytes(app.summary.bytes_copied),
         app.summary.files_skipped
@@ -710,6 +729,21 @@ mod tests {
         app.handle_message(ProgressMsg::Done);
         assert!(app.done);
         assert!(app.total_time.is_some());
+    }
+
+    #[test]
+    fn test_eta() {
+        let mut app = App::default();
+        assert!(app.eta().is_none());
+
+        app.scan_complete = true;
+        app.files_with_exif = 10;
+        app.recent_copies.push_back((1024, Duration::from_secs(1)));
+        app.summary.files_copied = 5; // total_processed is now 5, remaining is 5
+
+        // avg is 1 sec, remaining is 5, eta is 5 secs
+        let eta = app.eta().unwrap();
+        assert_eq!(eta, Duration::from_secs(5));
     }
 
     #[test]
