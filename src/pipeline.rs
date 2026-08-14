@@ -177,8 +177,30 @@ impl FileComparator {
     ///
     /// **Note:** The caller must ensure that `file1` is at the beginning of the file (position 0).
     fn compare_file(&mut self, file1: &mut File, size1: u64, path2: &Path) -> io::Result<bool> {
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32);
+        }
+
+        // Security check: open destination non-blockingly and ensure it is a regular file.
+        // Opening special files like FIFOs (named pipes) or devices can block indefinitely (DoS risk).
+        // Using O_NONBLOCK prevents open() from blocking on special files, and inspecting metadata
+        // on the open file handle (fstat) avoids TOCTOU races between checking and opening.
+        let mut file2 = options.open(path2)?;
+        let meta2 = file2.metadata()?;
+
+        if !meta2.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Destination is not a regular file",
+            ));
+        }
+
         // Fast path: compare sizes first
-        let meta2 = fs::metadata(path2)?;
         if size1 != meta2.len() {
             return Ok(false);
         }
@@ -190,8 +212,6 @@ impl FileComparator {
         if self.buf2.len() != FILE_COMPARE_CHUNK_SIZE {
             self.buf2.resize(FILE_COMPARE_CHUNK_SIZE, 0);
         }
-
-        let mut file2 = File::open(path2)?;
 
         loop {
             let n1 = Self::read_chunk(file1, &mut self.buf1)?;
@@ -548,6 +568,37 @@ mod tests {
         let mut f1 = File::open(&file1).unwrap();
         let len = f1.metadata().unwrap().len();
         assert!(comparator.compare_file(&mut f1, len, &file2).is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_compare_file_rejects_fifo() {
+        use std::process::Command;
+
+        let dir = tempfile::tempdir().unwrap();
+        let file1 = create_test_file(dir.path(), "file1.txt", b"");
+        let fifo_path = dir.path().join("test_fifo");
+
+        // Create FIFO using mkfifo command
+        let status = Command::new("mkfifo")
+            .arg(&fifo_path)
+            .status()
+            .expect("failed to execute mkfifo");
+        assert!(status.success(), "mkfifo failed");
+
+        let mut comparator = FileComparator::new();
+        let mut f1 = File::open(&file1).unwrap();
+        let len = f1.metadata().unwrap().len();
+
+        // Attempt to compare with the FIFO.
+        // Both have size 0, but compare_file opens with O_NONBLOCK and rejects the FIFO via fstat,
+        // avoiding an indefinite hang and TOCTOU races.
+        let result = comparator.compare_file(&mut f1, len, &fifo_path);
+
+        assert!(result.is_err(), "compare_file should fail for FIFO");
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(err.to_string(), "Destination is not a regular file");
     }
 
     #[test]

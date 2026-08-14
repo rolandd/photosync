@@ -17,3 +17,8 @@
 **Vulnerability:** A failed `io::copy` inside `atomic_copy_file` left partially written files at the destination. Because the pipeline handles `io::ErrorKind::AlreadyExists` by treating it as a duplicate, a failed copy attempt would permanently prevent the photo from being synced on subsequent runs (creating a persistent DoS/data loss condition).
 **Learning:** System APIs like `io::copy` do not guarantee state rollback on failure. When implementing atomic file operations with `create_new(true)`, the application is responsible for cleaning up artifacts if the operation aborts mid-stream.
 **Prevention:** Always wrap `io::copy` in a `match` block. On `Err`, explicitly `drop()` the destination file handle (crucial for Windows where open files are locked) and remove the incomplete file using `fs::remove_file()`.
+
+## 2026-06-06 - DoS Vulnerability via FIFOs in compare_file
+**Vulnerability:** `FileComparator::compare_file` opened destination files without verifying their file type. If the destination path was a FIFO (named pipe) with matching size (such as 0 bytes), calling `File::open` blocked indefinitely waiting for a writer, freezing the entire application. Furthermore, checking file type via path metadata before opening introduces a TOCTOU race.
+**Learning:** Functions that open files must verify that target paths are regular files before performing blocking I/O on Unix systems, and avoid TOCTOU races between checking and opening.
+**Prevention:** Open the target file using `O_NONBLOCK` on Unix systems (preventing `open()` from hanging on FIFOs/devices) and verify `meta2.is_file()` using `fstat` on the open file handle before performing I/O.
