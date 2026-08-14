@@ -261,8 +261,10 @@ fn file_walker(
         .follow_links(false)
         .into_iter()
         .filter_entry(move |e: &walkdir::DirEntry| {
-            let name = e.file_name().to_string_lossy();
-            !exclude_dirs.iter().any(|ex| name == *ex)
+            let name = e.file_name();
+            !exclude_dirs
+                .iter()
+                .any(|ex| name == std::ffi::OsStr::new(ex))
         });
 
     for walk_entry in walker {
