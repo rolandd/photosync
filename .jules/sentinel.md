@@ -22,3 +22,8 @@
 **Vulnerability:** `FileComparator::compare_file` opened destination files without verifying their file type. If the destination path was a FIFO (named pipe) with matching size (such as 0 bytes), calling `File::open` blocked indefinitely waiting for a writer, freezing the entire application. Furthermore, checking file type via path metadata before opening introduces a TOCTOU race.
 **Learning:** Functions that open files must verify that target paths are regular files before performing blocking I/O on Unix systems, and avoid TOCTOU races between checking and opening.
 **Prevention:** Open the target file using `O_NONBLOCK` on Unix systems (preventing `open()` from hanging on FIFOs/devices) and verify `meta2.is_file()` using `fstat` on the open file handle before performing I/O.
+
+## 2026-06-08 - Terminal Injection via Error Messages
+**Vulnerability:** Error strings passed to `report_error` and `ScanError` were forwarded directly to the TUI and text-mode displays without sanitization. An attacker could craft filenames or EXIF metadata containing ANSI escape codes that, when reflected in error messages (e.g. template errors, system I/O errors), allowed terminal manipulation.
+**Learning:** Sanitizing direct path outputs is insufficient if error wrappers or exception messages embed unsanitized user strings.
+**Prevention:** Explicitly sanitize error strings using `paths::sanitize_str` within `report_error` and `ScanError` before dispatching to UI components.
