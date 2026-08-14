@@ -5,3 +5,7 @@
 ## 2026-05-18 - [String Allocation in Hot Loops]
 **Learning:** `to_string_lossy()` in the `walkdir` filter closure caused measurable overhead due to allocations and UTF-8 validation for every file/directory scanned.
 **Action:** Prefer `OsStr` direct comparison for filenames in traversal loops to avoid unnecessary string allocations.
+
+## 2026-05-19 - [Eliminated Hot Loop PathBuf Clones]
+**Learning:** `DestDirResult` (containing a `PathBuf`) was being cloned from `dest_cache` on every single file processed in `src/pipeline.rs`, even on cache hits.
+**Action:** Update the cache entry in-place and yield a borrowed reference to the cached path, eliminating heap allocation and cloning overhead for sequential files.
