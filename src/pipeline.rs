@@ -146,11 +146,13 @@ fn report_error(
     error: impl Into<String>,
     shutdown: &AtomicBool,
 ) {
+    let filename_str = filename.into();
+    let error_str = error.into();
     send_progress(
         tx,
         ProgressMsg::CopyError {
-            filename: paths::sanitize_str(&filename.into()),
-            error: error.into(),
+            filename: paths::sanitize_str(&filename_str),
+            error: paths::sanitize_str(&error_str),
         },
         shutdown,
     );
@@ -285,7 +287,7 @@ fn file_walker(
                     &progress_tx,
                     ProgressMsg::ScanError {
                         path: SourcePath::new(path),
-                        error: e.to_string(),
+                        error: paths::sanitize_str(&e.to_string()),
                     },
                     &shutdown,
                 );
@@ -599,6 +601,26 @@ mod tests {
         let err = result.unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(err.to_string(), "Destination is not a regular file");
+    }
+
+    #[test]
+    fn test_report_error_sanitizes_terminal_escapes() {
+        let (tx, rx) = mpsc::sync_channel::<ProgressMsg>(10);
+        let shutdown = AtomicBool::new(false);
+
+        let unsafe_filename = "malicious_\x1b[31mfile\x1b[0m.jpg";
+        let unsafe_error = "Failed to copy \x1b[2Jmalicious path\r\n";
+
+        report_error(&tx, unsafe_filename, unsafe_error, &shutdown);
+
+        let msg = rx.recv().expect("Should receive message");
+        match msg {
+            ProgressMsg::CopyError { filename, error } => {
+                assert_eq!(filename, "malicious_?[31mfile?[0m.jpg");
+                assert_eq!(error, "Failed to copy ?[2Jmalicious path??");
+            }
+            _ => panic!("Expected CopyError message"),
+        }
     }
 
     #[test]
