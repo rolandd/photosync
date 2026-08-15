@@ -83,7 +83,6 @@ pub struct App {
 
     // Copy stage
     current_file: Option<(SourcePath, DestPath, u64)>, // (src, dest, size)
-    files_to_copy: u64,
 
     // Speed calculation (rolling window)
     recent_copies: VecDeque<(u64, Duration)>, // (bytes, duration)
@@ -108,7 +107,6 @@ impl App {
             scan_complete: false,
             files_with_exif: 0,
             current_file: None,
-            files_to_copy: 0,
             recent_copies: VecDeque::with_capacity(SPEED_WINDOW_SIZE),
             recent_items: VecDeque::with_capacity(size),
             max_recent_items: size,
@@ -140,6 +138,33 @@ impl App {
             self.recent_items.pop_back();
         }
         self.recent_items.push_front(RecentItem { text, style });
+    }
+
+    /// Calculate estimated time of arrival (ETA) based on recent copy durations.
+    ///
+    /// Returns `None` if the directory scan is not complete, if no files have been
+    /// copied yet, if the app is done, or if all files have already been processed.
+    fn eta(&self) -> Option<Duration> {
+        if !self.scan_complete || self.done || self.recent_copies.is_empty() {
+            return None;
+        }
+
+        let remaining = self
+            .files_with_exif
+            .saturating_sub(self.summary.exif_processed());
+        if remaining == 0 {
+            return None;
+        }
+
+        let total_duration: Duration = self.recent_copies.iter().map(|(_, dur)| *dur).sum();
+        if total_duration.is_zero() {
+            return None;
+        }
+
+        let avg_duration_secs = total_duration.as_secs_f64() / self.recent_copies.len() as f64;
+        let eta_secs = avg_duration_secs * remaining as f64;
+
+        Some(Duration::from_secs_f64(eta_secs))
     }
 
     /// Calculate speed in bytes per second from recent copies.
@@ -180,7 +205,6 @@ impl App {
             }
             ProgressMsg::ExifExtracted { .. } => {
                 self.files_with_exif += 1;
-                self.files_to_copy = self.files_with_exif;
             }
             ProgressMsg::CopyStarted { src, dest, size } => {
                 self.current_file = Some((src, dest, size));
@@ -210,7 +234,6 @@ impl App {
                 );
             }
             ProgressMsg::CopySkipped { filename } => {
-                self.files_to_copy = self.files_to_copy.saturating_sub(1);
                 self.add_recent(
                     format!("⚠ {}  (already exists)", filename),
                     Style::default().fg(Color::Yellow),
@@ -374,7 +397,7 @@ fn ui(frame: &mut Frame, app: &App) {
     frame.render_widget(current_para, chunks[1]);
 
     // Progress bar
-    let processed = app.summary.total_processed();
+    let processed = app.summary.exif_processed();
     let total = app.files_with_exif.max(1);
     let progress_ratio = processed as f64 / total as f64;
     let percentage = (progress_ratio * 100.0).min(100.0);
@@ -394,9 +417,15 @@ fn ui(frame: &mut Frame, app: &App) {
     };
     let elapsed = app.total_time.unwrap_or_else(|| app.start_time.elapsed());
     let time_str = format_duration(elapsed);
+    let eta_str = if let Some(eta) = app.eta() {
+        format!("    ETA: {}", format_duration(eta))
+    } else {
+        String::new()
+    };
     let stats_text = format!(
-        "Time: {}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
+        "Time: {}{}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
         time_str,
+        eta_str,
         speed_text,
         progress::format_bytes(app.summary.bytes_copied),
         app.summary.files_skipped
@@ -591,12 +620,10 @@ mod tests {
     #[test]
     fn test_handle_message_copy_skipped() {
         let mut app = App::default();
-        app.files_to_copy = 5;
         app.handle_message(ProgressMsg::CopySkipped {
             filename: "test.jpg".to_string(),
         });
         assert_eq!(app.summary.files_skipped, 1);
-        assert_eq!(app.files_to_copy, 4); // decremented
         assert_eq!(app.recent_items.len(), 1);
         assert!(
             app.recent_items
@@ -781,5 +808,113 @@ mod tests {
                 case.name
             );
         }
+    }
+
+    #[test]
+    fn test_eta_not_ready() {
+        let mut app = App::default();
+        assert!(app.eta().is_none(), "No ETA before scan is complete");
+
+        // Even with copies in history, scan must complete first
+        app.recent_copies.push_back((1024, Duration::from_secs(1)));
+        assert!(app.eta().is_none(), "No ETA before scan is complete");
+    }
+
+    #[test]
+    fn test_eta_no_copies() {
+        let mut app = App::default();
+        app.scan_complete = true;
+        app.files_with_exif = 10;
+        assert!(app.eta().is_none(), "No ETA without copy duration data");
+    }
+
+    #[test]
+    fn test_eta_calculation() {
+        let mut app = App::default();
+        app.scan_complete = true;
+        app.files_with_exif = 10;
+        app.summary.files_copied = 4;
+        app.summary.files_skipped = 1; // total_processed = 5, remaining = 5
+
+        // Add 2 copies taking 1s and 3s (average 2s per file)
+        app.recent_copies.push_back((1024, Duration::from_secs(1)));
+        app.recent_copies.push_back((2048, Duration::from_secs(3)));
+
+        // 5 remaining * 2s average = 10s ETA
+        let eta = app.eta().expect("ETA should be calculated");
+        assert_eq!(eta, Duration::from_secs(10));
+    }
+
+    #[test]
+    fn test_eta_done_or_all_processed() {
+        let mut app = App::default();
+        app.scan_complete = true;
+        app.files_with_exif = 10;
+        app.summary.files_copied = 10;
+        app.recent_copies.push_back((1024, Duration::from_secs(1)));
+
+        // All processed -> None
+        assert!(app.eta().is_none());
+
+        // App done -> None
+        app.summary.files_copied = 5;
+        app.done = true;
+        assert!(app.eta().is_none());
+    }
+
+    #[test]
+    fn test_ui_eta_rendering() {
+        let mut app = App::default();
+        app.scan_complete = true;
+        app.files_with_exif = 10;
+        app.summary.files_copied = 5; // remaining = 5
+        app.recent_copies.push_back((1024, Duration::from_secs(2))); // avg = 2s -> ETA = 10s ("00:10")
+
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        terminal.draw(|f| ui(f, &app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let mut found_eta = false;
+        for y in 0..24 {
+            let mut row_text = String::new();
+            for x in 0..120 {
+                row_text.push_str(buffer[(x, y)].symbol());
+            }
+            if row_text.contains("ETA: 00:10") {
+                found_eta = true;
+                break;
+            }
+        }
+        assert!(found_eta, "ETA not found in UI buffer");
+    }
+
+    #[test]
+    fn test_eta_scan_error_does_not_affect_remaining_work() {
+        let mut app = App::default();
+        app.scan_complete = true;
+        app.files_with_exif = 10;
+        app.summary.files_copied = 2; // 8 remaining
+
+        // 2 recent copies taking 1s and 3s (avg 2s per file)
+        app.recent_copies.push_back((1024, Duration::from_secs(1)));
+        app.recent_copies.push_back((2048, Duration::from_secs(3)));
+
+        // ETA should be 8 * 2s = 16s
+        let initial_eta = app.eta().expect("ETA should be calculated");
+        assert_eq!(initial_eta, Duration::from_secs(16));
+
+        // Simulate 5 ScanErrors occurring during directory traversal
+        for i in 0..5 {
+            app.handle_message(ProgressMsg::ScanError {
+                path: SourcePath::new(PathBuf::from(format!("/invalid/path_{i}"))),
+                error: "Permission denied".to_string(),
+            });
+        }
+
+        // ETA remaining work should still be 8 files * 2s = 16s (unaffected by ScanErrors)
+        let eta_after_scan_errors = app.eta().expect("ETA should still be calculated");
+        assert_eq!(eta_after_scan_errors, Duration::from_secs(16));
     }
 }
