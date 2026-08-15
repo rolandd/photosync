@@ -102,6 +102,7 @@ pub struct Summary {
     pub files_copied: u64,
     pub files_skipped: u64,
     pub files_errored: u64,
+    pub scan_errors: u64,
     pub files_found: u64,
     pub bytes_copied: u64,
     pub total_duration: Duration,
@@ -112,11 +113,12 @@ pub struct Summary {
 }
 
 impl Summary {
-    /// Returns the total number of files processed (copied, skipped, or errored).
-    pub fn total_processed(&self) -> u64 {
+    /// Returns the number of EXIF-discovered files that reached a terminal processing state
+    /// (copied, skipped, copy error, or unknown camera), excluding directory scan errors.
+    pub fn exif_processed(&self) -> u64 {
         self.files_copied
             + self.files_skipped
-            + self.files_errored
+            + self.files_errored.saturating_sub(self.scan_errors)
             + self
                 .unknown_cameras
                 .values()
@@ -149,6 +151,7 @@ impl Summary {
             // Count scan errors as generic errors
             ProgressMsg::ScanError { .. } => {
                 self.files_errored += 1;
+                self.scan_errors += 1;
             }
             ProgressMsg::UnknownCamera { model, .. } => {
                 *self.unknown_cameras.entry(model.clone()).or_insert(0) += 1;
@@ -335,16 +338,19 @@ mod tests {
     }
 
     #[test]
-    fn test_summary_total_processed() {
-        let mut summary = Summary::default();
-        summary.files_copied = 10;
-        summary.files_skipped = 5;
-        summary.files_errored = 2;
+    fn test_summary_exif_processed() {
+        let mut summary = Summary {
+            files_copied: 10,
+            files_skipped: 5,
+            files_errored: 4,
+            scan_errors: 2, // 2 of the 4 errors are scan errors
+            ..Default::default()
+        };
         summary.unknown_cameras.insert("ModelA".to_string(), 3);
         summary.unknown_cameras.insert("ModelB".to_string(), 1);
 
-        // 10 + 5 + 2 + 3 + 1 = 21
-        assert_eq!(summary.total_processed(), 21);
+        // 10 copied + 5 skipped + (4 - 2) copy errors + 3 + 1 unknown cameras = 21
+        assert_eq!(summary.exif_processed(), 21);
     }
 
     #[test]
@@ -376,6 +382,15 @@ mod tests {
             error: "test error".to_string(),
         }));
         assert_eq!(summary.files_errored, 1);
+        assert_eq!(summary.scan_errors, 0);
+
+        // ScanError increments errored and scan_errors
+        assert!(!summary.update(&ProgressMsg::ScanError {
+            path: SourcePath::new(PathBuf::from("/bad/path")),
+            error: "Permission denied".to_string(),
+        }));
+        assert_eq!(summary.files_errored, 2);
+        assert_eq!(summary.scan_errors, 1);
 
         // SuspiciousDuplicate adds to list
         assert!(!summary.update(&ProgressMsg::SuspiciousDuplicate {
@@ -386,5 +401,36 @@ mod tests {
 
         // Done returns true
         assert!(summary.update(&ProgressMsg::Done));
+    }
+
+    #[test]
+    fn test_summary_exif_processed_with_updates() {
+        let mut summary = Summary::default();
+        assert_eq!(summary.exif_processed(), 0);
+
+        summary.update(&ProgressMsg::CopyComplete {
+            filename: "a.jpg".to_string(),
+            size: 100,
+            duration: Duration::from_secs(1),
+        });
+        summary.update(&ProgressMsg::CopySkipped {
+            filename: "b.jpg".to_string(),
+        });
+        summary.update(&ProgressMsg::CopyError {
+            filename: "c.jpg".to_string(),
+            error: "Disk full".to_string(),
+        });
+        summary.update(&ProgressMsg::UnknownCamera {
+            model: "UnknownCam".to_string(),
+        });
+        // 4 terminal outcomes for EXIF files
+        assert_eq!(summary.exif_processed(), 4);
+
+        // Scan errors should not increase exif_processed
+        summary.update(&ProgressMsg::ScanError {
+            path: SourcePath::new(PathBuf::from("/bad/path")),
+            error: "Permission denied".to_string(),
+        });
+        assert_eq!(summary.exif_processed(), 4);
     }
 }

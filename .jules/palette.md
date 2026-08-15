@@ -9,3 +9,7 @@
 ## 2026-02-18 - Elapsed Time Indicator
 **Learning:** For long-running batch operations, users need a sense of temporal scale to estimate completion or detect hangs.
 **Action:** Display a wall-clock timer (MM:SS) that starts immediately and freezes upon completion.
+
+## 2026-02-19 - ETA Indicator for Batch Progress
+**Learning:** In addition to elapsed time, users benefit from an Estimated Time of Arrival (ETA) to anticipate completion time during long file copy operations.
+**Action:** Compute ETA using a rolling average of recent copy durations multiplied by remaining files (`files_with_exif - exif_processed`), showing it once the scan is complete and copy durations are established.
