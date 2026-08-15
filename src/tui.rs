@@ -142,6 +142,25 @@ impl App {
         self.recent_items.push_front(RecentItem { text, style });
     }
 
+    /// Calculate estimated time of arrival (ETA).
+    fn eta(&self) -> Option<Duration> {
+        if !self.scan_complete || self.done || self.recent_copies.is_empty() {
+            return None;
+        }
+
+        let remaining_files = self
+            .files_with_exif
+            .saturating_sub(self.summary.total_processed());
+        if remaining_files == 0 {
+            return None;
+        }
+
+        let total_duration: Duration = self.recent_copies.iter().map(|(_, d)| *d).sum();
+
+        let avg_duration = total_duration / (self.recent_copies.len() as u32);
+        Some(avg_duration * (remaining_files as u32))
+    }
+
     /// Calculate speed in bytes per second from recent copies.
     fn speed_bytes_per_sec(&self) -> f64 {
         if self.recent_copies.is_empty() {
@@ -394,9 +413,15 @@ fn ui(frame: &mut Frame, app: &App) {
     };
     let elapsed = app.total_time.unwrap_or_else(|| app.start_time.elapsed());
     let time_str = format_duration(elapsed);
+    let eta_text = if let Some(eta) = app.eta() {
+        format!("    ETA: {}", format_duration(eta))
+    } else {
+        "".to_string()
+    };
     let stats_text = format!(
-        "Time: {}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
+        "Time: {}{}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
         time_str,
+        eta_text,
         speed_text,
         progress::format_bytes(app.summary.bytes_copied),
         app.summary.files_skipped
