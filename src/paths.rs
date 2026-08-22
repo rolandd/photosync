@@ -85,7 +85,6 @@ pub fn sanitize_filename(s: &str) -> String {
 /// Checks if the filename is a Windows reserved device name (CON, PRN, etc.)
 fn is_windows_reserved(s: &str) -> bool {
     // Reserved names are case-insensitive on Windows
-    let upper = s.to_ascii_uppercase();
     // Check for exact match or match with extension (e.g., CON.txt is also invalid)
     // Actually, on Windows, "CON.txt" is invalid, but checking the stem is usually enough.
     // However, the stem check is complex due to multiple dots.
@@ -93,33 +92,35 @@ fn is_windows_reserved(s: &str) -> bool {
 
     // Split by dot to get the stem (first part)
     // Note: Windows treats "CON.txt", "CON.foo.bar", "CON" all as the device CON.
-    let stem = upper.split('.').next().unwrap_or("");
+    let stem = s.split('.').next().unwrap_or("");
+    let len = stem.len();
+    if len != 3 && len != 4 {
+        return false;
+    }
 
-    matches!(
-        stem,
-        "CON"
-            | "PRN"
-            | "AUX"
-            | "NUL"
-            | "COM1"
-            | "COM2"
-            | "COM3"
-            | "COM4"
-            | "COM5"
-            | "COM6"
-            | "COM7"
-            | "COM8"
-            | "COM9"
-            | "LPT1"
-            | "LPT2"
-            | "LPT3"
-            | "LPT4"
-            | "LPT5"
-            | "LPT6"
-            | "LPT7"
-            | "LPT8"
-            | "LPT9"
-    )
+    stem.eq_ignore_ascii_case("CON")
+        || stem.eq_ignore_ascii_case("PRN")
+        || stem.eq_ignore_ascii_case("AUX")
+        || stem.eq_ignore_ascii_case("NUL")
+        || (len == 4
+            && (stem.eq_ignore_ascii_case("COM1")
+                || stem.eq_ignore_ascii_case("COM2")
+                || stem.eq_ignore_ascii_case("COM3")
+                || stem.eq_ignore_ascii_case("COM4")
+                || stem.eq_ignore_ascii_case("COM5")
+                || stem.eq_ignore_ascii_case("COM6")
+                || stem.eq_ignore_ascii_case("COM7")
+                || stem.eq_ignore_ascii_case("COM8")
+                || stem.eq_ignore_ascii_case("COM9")
+                || stem.eq_ignore_ascii_case("LPT1")
+                || stem.eq_ignore_ascii_case("LPT2")
+                || stem.eq_ignore_ascii_case("LPT3")
+                || stem.eq_ignore_ascii_case("LPT4")
+                || stem.eq_ignore_ascii_case("LPT5")
+                || stem.eq_ignore_ascii_case("LPT6")
+                || stem.eq_ignore_ascii_case("LPT7")
+                || stem.eq_ignore_ascii_case("LPT8")
+                || stem.eq_ignore_ascii_case("LPT9")))
 }
 
 /// A source file path (input).
