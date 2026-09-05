@@ -162,6 +162,22 @@ impl App {
         }
     }
 
+    /// Calculate Estimated Time of Arrival (ETA) based on recent copies.
+    fn eta(&self) -> Option<Duration> {
+        if !self.scan_complete || self.done || self.recent_copies.is_empty() {
+            return None;
+        }
+
+        let total_duration: Duration = self.recent_copies.iter().map(|(_, d)| *d).sum();
+
+        let avg_duration = total_duration / self.recent_copies.len() as u32;
+        let remaining_files = self
+            .files_with_exif
+            .saturating_sub(self.summary.total_processed());
+
+        Some(avg_duration * remaining_files as u32)
+    }
+
     fn handle_message(&mut self, msg: ProgressMsg) {
         // Update common summary statistics; sets done flag on Done message
         self.done = self.summary.update(&msg);
@@ -394,9 +410,17 @@ fn ui(frame: &mut Frame, app: &App) {
     };
     let elapsed = app.total_time.unwrap_or_else(|| app.start_time.elapsed());
     let time_str = format_duration(elapsed);
+
+    let eta_str = if let Some(eta) = app.eta() {
+        format!("    ETA: {}", format_duration(eta))
+    } else {
+        String::new()
+    };
+
     let stats_text = format!(
-        "Time: {}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
+        "Time: {}{}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
         time_str,
+        eta_str,
         speed_text,
         progress::format_bytes(app.summary.bytes_copied),
         app.summary.files_skipped
@@ -535,6 +559,52 @@ mod tests {
             .push_back((10 * 1024 * 1024, Duration::from_secs(1)));
         let speed = app.speed_bytes_per_sec();
         assert!((speed - 10485760.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_eta() {
+        let mut app = App::default();
+        app.scan_complete = true;
+        app.files_with_exif = 10;
+
+        // 0 processed, 10 remaining
+        app.recent_copies.push_back((1024, Duration::from_secs(2)));
+        app.recent_copies.push_back((1024, Duration::from_secs(4)));
+        // avg = 3 secs. ETA = 3 * 10 = 30 secs
+
+        assert_eq!(app.eta(), Some(Duration::from_secs(30)));
+
+        // Simulating some processed
+        app.handle_message(ProgressMsg::CopyComplete {
+            filename: "a".to_string(),
+            size: 1024,
+            duration: Duration::from_secs(4), // Make the average exactly integer sec
+        });
+
+        // remaining = 9
+        // recent_copies has 3 items: 2s, 4s, 4s. Total = 10s. Avg = 10/3 secs.
+        // Let's explicitly check how the eta computes this.
+        // avg_duration = 10s / 3 = 3.333333s
+        // ETA = 3.333333s * 9 = 30s.
+
+        // So let's add 2 instead to make the division cleaner:
+        app.recent_copies.clear();
+        app.recent_copies.push_back((1024, Duration::from_secs(2)));
+        app.recent_copies.push_back((1024, Duration::from_secs(2)));
+        app.recent_copies.push_back((1024, Duration::from_secs(2)));
+
+        // remaining = 9
+        // avg = 2 secs
+        // ETA = 2 * 9 = 18 secs
+        assert_eq!(app.eta(), Some(Duration::from_secs(18)));
+
+        // Test edge cases
+        app.scan_complete = false;
+        assert_eq!(app.eta(), None);
+
+        app.scan_complete = true;
+        app.done = true;
+        assert_eq!(app.eta(), None);
     }
 
     #[test]
