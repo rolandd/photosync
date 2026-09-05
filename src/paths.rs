@@ -84,8 +84,6 @@ pub fn sanitize_filename(s: &str) -> String {
 
 /// Checks if the filename is a Windows reserved device name (CON, PRN, etc.)
 fn is_windows_reserved(s: &str) -> bool {
-    // Reserved names are case-insensitive on Windows
-    let upper = s.to_ascii_uppercase();
     // Check for exact match or match with extension (e.g., CON.txt is also invalid)
     // Actually, on Windows, "CON.txt" is invalid, but checking the stem is usually enough.
     // However, the stem check is complex due to multiple dots.
@@ -93,33 +91,16 @@ fn is_windows_reserved(s: &str) -> bool {
 
     // Split by dot to get the stem (first part)
     // Note: Windows treats "CON.txt", "CON.foo.bar", "CON" all as the device CON.
-    let stem = upper.split('.').next().unwrap_or("");
+    let stem = s.split('.').next().unwrap_or("");
 
-    matches!(
-        stem,
-        "CON"
-            | "PRN"
-            | "AUX"
-            | "NUL"
-            | "COM1"
-            | "COM2"
-            | "COM3"
-            | "COM4"
-            | "COM5"
-            | "COM6"
-            | "COM7"
-            | "COM8"
-            | "COM9"
-            | "LPT1"
-            | "LPT2"
-            | "LPT3"
-            | "LPT4"
-            | "LPT5"
-            | "LPT6"
-            | "LPT7"
-            | "LPT8"
-            | "LPT9"
-    )
+    // Reserved names are case-insensitive on Windows.
+    // We use eq_ignore_ascii_case to avoid heap allocations from to_ascii_uppercase().
+    [
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ]
+    .iter()
+    .any(|&reserved| stem.eq_ignore_ascii_case(reserved))
 }
 
 /// A source file path (input).
