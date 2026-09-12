@@ -1,0 +1,4 @@
+💡 What: Added an Estimated Time of Arrival (ETA) to the TUI display during the batch syncing process.
+🎯 Why: Long-running file copy operations can cause user anxiety. An ETA gives users a sense of temporal scale, helping them estimate when the process will complete and assuring them that progress is being made.
+📸 Before/After: The stats line now dynamically includes `ETA: MM:SS` alongside time elapsed and copy speeds.
+♿ Accessibility: Reduces cognitive load by providing a concrete completion estimate rather than making the user calculate it mentally based on bytes/sec and remaining items.
