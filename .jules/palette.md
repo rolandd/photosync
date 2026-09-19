@@ -9,3 +9,7 @@
 ## 2026-02-18 - Elapsed Time Indicator
 **Learning:** For long-running batch operations, users need a sense of temporal scale to estimate completion or detect hangs.
 **Action:** Display a wall-clock timer (MM:SS) that starts immediately and freezes upon completion.
+
+## 2026-02-19 - ETA Display for Batch Operations
+**Learning:** For long-running batch operations in TUIs, always compute and display a dynamically updating ETA (Estimated Time of Arrival) based on recent throughput to reduce user anxiety and provide better progress feedback.
+**Action:** Use a rolling window of recent operations to calculate average duration and multiply by remaining items to estimate time remaining, only displaying it when scanning is complete and the app is actively processing.
