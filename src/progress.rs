@@ -96,6 +96,20 @@ pub fn format_speed(bytes: u64, duration: Duration) -> String {
     }
 }
 
+/// Format an integer with comma separators (e.g., "1,234,567").
+pub fn format_number(n: u64) -> String {
+    let s = n.to_string();
+    let mut result = String::with_capacity(s.len() + s.len() / 3);
+    let len = s.len();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (len - i).is_multiple_of(3) {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    result
+}
+
 /// Summary statistics for a sync operation.
 #[derive(Debug, Clone, Default)]
 pub struct Summary {
@@ -170,14 +184,18 @@ impl fmt::Display for Summary {
             String::new()
         };
         let error_str = if self.files_errored > 0 {
-            format!(", {} errors", self.files_errored)
+            format!(", {} errors", format_number(self.files_errored))
         } else {
             String::new()
         };
         write!(
             f,
             "Summary: {} copied, {} skipped (duplicates), {} total files found{}{}",
-            self.files_copied, self.files_skipped, self.files_found, error_str, speed_str
+            format_number(self.files_copied),
+            format_number(self.files_skipped),
+            format_number(self.files_found),
+            error_str,
+            speed_str
         )?;
 
         // Print suspicious duplicates report
@@ -186,7 +204,7 @@ impl fmt::Display for Summary {
             writeln!(
                 f,
                 "\nWARNING: {} suspicious duplicate(s) found (same name, different contents):",
-                self.suspicious_duplicates.len()
+                format_number(self.suspicious_duplicates.len() as u64)
             )?;
             for (src, dest) in &self.suspicious_duplicates {
                 writeln!(f, "  Source: {}", src)?;
@@ -201,7 +219,7 @@ impl fmt::Display for Summary {
             writeln!(
                 f,
                 "\nWARNING: {} file(s) skipped due to unknown camera model(s):",
-                total_skipped
+                format_number(total_skipped as u64)
             )?;
             // BTreeMap is already sorted by key
             for (model, count) in &self.unknown_cameras {
@@ -261,6 +279,18 @@ mod tests {
         // 10 MB in 1 second = 10 MB/s
         let result = format_speed(10 * 1024 * 1024, Duration::from_secs(1));
         assert_eq!(result, "10.0 MB/s");
+    }
+
+    #[test]
+    fn test_format_number() {
+        assert_eq!(format_number(0), "0");
+        assert_eq!(format_number(1), "1");
+        assert_eq!(format_number(12), "12");
+        assert_eq!(format_number(123), "123");
+        assert_eq!(format_number(1234), "1,234");
+        assert_eq!(format_number(12345), "12,345");
+        assert_eq!(format_number(123456), "123,456");
+        assert_eq!(format_number(1234567), "1,234,567");
     }
 
     #[test]
