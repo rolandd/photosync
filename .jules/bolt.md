@@ -9,3 +9,7 @@
 ## 2026-05-19 - [Eliminated Hot Loop PathBuf Clones]
 **Learning:** `DestDirResult` (containing a `PathBuf`) was being cloned from `dest_cache` on every single file processed in `src/pipeline.rs`, even on cache hits.
 **Action:** Update the cache entry in-place and yield a borrowed reference to the cached path, eliminating heap allocation and cloning overhead for sequential files.
+
+## 2026-05-19 - [String Allocation in Case-Insensitive Comparisons]
+**Learning:** Checking for reserved Windows filenames in a hot path (during traversal/sanitization) previously relied on `.to_ascii_uppercase()` which allocated a new `String` on the heap for every file.
+**Action:** Replace `to_ascii_uppercase()` in hot paths with a loop over static strings using `.eq_ignore_ascii_case()`, which performs case-insensitive comparisons without allocating memory.
