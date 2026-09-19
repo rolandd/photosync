@@ -9,3 +9,7 @@
 ## 2026-02-18 - Elapsed Time Indicator
 **Learning:** For long-running batch operations, users need a sense of temporal scale to estimate completion or detect hangs.
 **Action:** Display a wall-clock timer (MM:SS) that starts immediately and freezes upon completion.
+
+## 2026-02-24 - Dynamic Progress Feedback
+**Learning:** Showing error/warning colors immediately during operation (via progress bar/border) is superior to waiting for completion.
+**Action:** Use dynamic status colors for active widgets (like Gauge) to provide "fail-fast" visual feedback.
