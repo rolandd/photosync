@@ -9,3 +9,7 @@
 ## 2026-02-18 - Elapsed Time Indicator
 **Learning:** For long-running batch operations, users need a sense of temporal scale to estimate completion or detect hangs.
 **Action:** Display a wall-clock timer (MM:SS) that starts immediately and freezes upon completion.
+
+## 2026-03-05 - Consistent TUI Status Colors
+**Learning:** Hardcoding colors in TUI components (e.g., Green for completion prompts or Cyan for progress bars) can conflict with the actual application state, leading to inconsistent user experience. For example, showing a green "completion" prompt even when critical errors occurred sends mixed signals to the user.
+**Action:** Use a centralized status color source of truth (like a `get_status_color` function) dynamically for all relevant UI components (borders, gauges, footers) to ensure consistent visual feedback reflecting the true application state.
