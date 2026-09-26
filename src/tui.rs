@@ -162,6 +162,36 @@ impl App {
         }
     }
 
+    /// Calculate ETA based on recent copy speed and remaining files.
+    fn eta(&self) -> Option<Duration> {
+        if !self.scan_complete || self.done || self.recent_copies.is_empty() {
+            return None;
+        }
+
+        let remaining_files = self
+            .files_with_exif
+            .saturating_sub(self.summary.total_processed());
+
+        if remaining_files == 0 {
+            return None;
+        }
+
+        let (_total_bytes, total_duration) = self
+            .recent_copies
+            .iter()
+            .fold((0, Duration::ZERO), |(b, d), (bytes, dur)| {
+                (b + bytes, d + *dur)
+            });
+
+        // Use duration directly for the files in the window to compute average duration per file
+        if total_duration.as_secs_f64() > 0.0 && !self.recent_copies.is_empty() {
+            let avg_duration_per_file = total_duration.div_f64(self.recent_copies.len() as f64);
+            Some(avg_duration_per_file.mul_f64(remaining_files as f64))
+        } else {
+            None
+        }
+    }
+
     fn handle_message(&mut self, msg: ProgressMsg) {
         // Update common summary statistics; sets done flag on Done message
         self.done = self.summary.update(&msg);
@@ -394,9 +424,16 @@ fn ui(frame: &mut Frame, app: &App) {
     };
     let elapsed = app.total_time.unwrap_or_else(|| app.start_time.elapsed());
     let time_str = format_duration(elapsed);
+    let eta_str = if let Some(eta) = app.eta() {
+        format!("    ETA: {}", format_duration(eta))
+    } else {
+        "".to_string()
+    };
+
     let stats_text = format!(
-        "Time: {}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
+        "Time: {}{}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
         time_str,
+        eta_str,
         speed_text,
         progress::format_bytes(app.summary.bytes_copied),
         app.summary.files_skipped
@@ -519,6 +556,28 @@ mod tests {
         assert_eq!(app.summary.files_found, 0);
         assert_eq!(app.summary.files_copied, 0);
         assert!(!app.done);
+    }
+
+    #[test]
+    fn test_eta_calculation() {
+        let mut app = App::default();
+
+        // Initial state: no scan, no recent copies -> no ETA
+        assert_eq!(app.eta(), None);
+
+        // Scan complete, but no copies -> no ETA
+        app.scan_complete = true;
+        app.files_with_exif = 10;
+        assert_eq!(app.eta(), None);
+
+        // One copy done, duration 1 sec. 9 files remaining. ETA = 9 secs.
+        app.recent_copies.push_back((1024, Duration::from_secs(1)));
+        app.summary.files_copied = 1;
+        assert_eq!(app.eta(), Some(Duration::from_secs(9)));
+
+        // App done -> no ETA
+        app.done = true;
+        assert_eq!(app.eta(), None);
     }
 
     #[test]
