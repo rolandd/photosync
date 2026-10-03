@@ -380,7 +380,11 @@ fn ui(frame: &mut Frame, app: &App) {
     let percentage = (progress_ratio * 100.0).min(100.0);
 
     let gauge = Gauge::default()
-        .gauge_style(Style::default().fg(Color::Cyan).bg(Color::DarkGray))
+        .gauge_style(
+            Style::default()
+                .fg(get_status_color(app))
+                .bg(Color::DarkGray),
+        )
         .ratio(progress_ratio.min(1.0))
         .label(format!("{} / {} ({:.0}%)", processed, total, percentage));
     frame.render_widget(gauge, chunks[2]);
@@ -394,9 +398,23 @@ fn ui(frame: &mut Frame, app: &App) {
     };
     let elapsed = app.total_time.unwrap_or_else(|| app.start_time.elapsed());
     let time_str = format_duration(elapsed);
+
+    let eta_str = if app.scan_complete && !app.done && !app.recent_copies.is_empty() {
+        let total_duration: Duration = app.recent_copies.iter().map(|(_, d)| *d).sum();
+        let avg_duration = total_duration / app.recent_copies.len() as u32;
+        let remaining_files = app
+            .files_with_exif
+            .saturating_sub(app.summary.total_processed());
+        let eta = avg_duration * remaining_files as u32;
+        format!("    ETA: {}", format_duration(eta))
+    } else {
+        String::new()
+    };
+
     let stats_text = format!(
-        "Time: {}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
+        "Time: {}{}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
         time_str,
+        eta_str,
         speed_text,
         progress::format_bytes(app.summary.bytes_copied),
         app.summary.files_skipped
@@ -424,7 +442,7 @@ fn ui(frame: &mut Frame, app: &App) {
             .style(
                 Style::default()
                     .fg(Color::Black)
-                    .bg(Color::Green)
+                    .bg(get_status_color(app))
                     .add_modifier(Modifier::BOLD),
             )
             .alignment(Alignment::Center);
