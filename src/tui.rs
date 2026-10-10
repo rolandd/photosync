@@ -162,6 +162,25 @@ impl App {
         }
     }
 
+    /// Calculate Estimated Time of Arrival (ETA) based on average recent duration and remaining files.
+    fn eta(&self) -> Option<Duration> {
+        if !self.scan_complete || self.done || self.recent_copies.is_empty() {
+            return None;
+        }
+
+        let remaining = self
+            .files_with_exif
+            .saturating_sub(self.summary.total_processed());
+        if remaining == 0 {
+            return None;
+        }
+
+        let total_duration: Duration = self.recent_copies.iter().map(|(_, dur)| *dur).sum();
+        let avg_duration = total_duration / self.recent_copies.len() as u32;
+
+        Some(avg_duration * remaining as u32)
+    }
+
     fn handle_message(&mut self, msg: ProgressMsg) {
         // Update common summary statistics; sets done flag on Done message
         self.done = self.summary.update(&msg);
@@ -394,9 +413,16 @@ fn ui(frame: &mut Frame, app: &App) {
     };
     let elapsed = app.total_time.unwrap_or_else(|| app.start_time.elapsed());
     let time_str = format_duration(elapsed);
+    let eta_text = if let Some(eta) = app.eta() {
+        format!("    ETA: {}", format_duration(eta))
+    } else {
+        String::new()
+    };
+
     let stats_text = format!(
-        "Time: {}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
+        "Time: {}{}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
         time_str,
+        eta_text,
         speed_text,
         progress::format_bytes(app.summary.bytes_copied),
         app.summary.files_skipped
@@ -519,6 +545,33 @@ mod tests {
         assert_eq!(app.summary.files_found, 0);
         assert_eq!(app.summary.files_copied, 0);
         assert!(!app.done);
+    }
+
+    #[test]
+    fn test_eta_calculation() {
+        let mut app = App::default();
+        app.scan_complete = true;
+        app.files_with_exif = 100;
+
+        // Before any copies, ETA is None
+        assert_eq!(app.eta(), None);
+
+        // Add 2 copies taking 1 second each
+        app.recent_copies.push_back((1024, Duration::from_secs(1)));
+        app.recent_copies.push_back((1024, Duration::from_secs(1)));
+
+        // Remaining files: 100
+        // Avg duration: 1s
+        // ETA: 100 * 1s = 100s
+        assert_eq!(app.eta(), Some(Duration::from_secs(100)));
+
+        app.summary.files_copied = 50;
+        // Remaining files: 50
+        // ETA: 50 * 1s = 50s
+        assert_eq!(app.eta(), Some(Duration::from_secs(50)));
+
+        app.done = true;
+        assert_eq!(app.eta(), None);
     }
 
     #[test]
