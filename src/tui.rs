@@ -394,9 +394,28 @@ fn ui(frame: &mut Frame, app: &App) {
     };
     let elapsed = app.total_time.unwrap_or_else(|| app.start_time.elapsed());
     let time_str = format_duration(elapsed);
+
+    // Calculate ETA
+    let eta_text = if app.scan_complete && !app.done && !app.recent_copies.is_empty() {
+        let remaining_files = app
+            .files_with_exif
+            .saturating_sub(app.summary.total_processed());
+        if remaining_files > 0 {
+            let total_dur: Duration = app.recent_copies.iter().map(|(_, d)| *d).sum();
+            let avg_dur_per_file = total_dur.div_f64(app.recent_copies.len() as f64);
+            let estimated_remaining = avg_dur_per_file.mul_f64(remaining_files as f64);
+            format!("    ETA: {}", format_duration(estimated_remaining))
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
     let stats_text = format!(
-        "Time: {}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
+        "Time: {}{}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
         time_str,
+        eta_text,
         speed_text,
         progress::format_bytes(app.summary.bytes_copied),
         app.summary.files_skipped
