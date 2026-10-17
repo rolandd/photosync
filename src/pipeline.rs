@@ -343,7 +343,16 @@ fn file_processor(
                 return;
             }
 
-            match File::open(&path) {
+            let mut options = fs::OpenOptions::new();
+            options.read(true);
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32);
+            }
+
+            match options.open(&path) {
                 Ok(f) => break f,
                 Err(e) => {
                     if is_too_many_open_files(&e) {
@@ -853,7 +862,6 @@ mod tests {
     #[cfg(unix)]
     fn test_atomic_copy_rejects_fifo() {
         use std::process::Command;
-        use std::thread;
 
         let dir = tempfile::tempdir().unwrap();
         let fifo_path = dir.path().join("test_fifo");
@@ -866,28 +874,20 @@ mod tests {
             .expect("failed to execute mkfifo");
         assert!(status.success(), "mkfifo failed");
 
-        // Spawn a thread to open the FIFO for writing.
-        // Opening a FIFO for reading blocks until a writer opens it.
-        // Opening for writing blocks until a reader opens it.
-        let fifo_clone = fifo_path.clone();
-        let handle = thread::spawn(move || {
-            // Open for writing to unblock the reader in main thread.
-            // Using OpenOptions to explicitly open for writing.
-            if let Ok(mut file) = fs::OpenOptions::new().write(true).open(fifo_clone) {
-                let _ = file.write_all(b"data");
-            }
-        });
+        // Open the FIFO using O_NONBLOCK to prevent blocking.
+        // This simulates the behavior of the application code.
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32);
 
-        // Attempt to copy from the FIFO.
-        // open() will succeed once the writer thread opens it.
-        let mut reader = File::open(&fifo_path).expect("Failed to open FIFO");
+        let mut reader = options
+            .open(&fifo_path)
+            .expect("Failed to open FIFO non-blockingly");
 
         // This should fail because it's not a regular file.
         let meta = reader.metadata().unwrap();
         let result = atomic_copy_file(&mut reader, &dest_path, meta.is_file());
-
-        // Ensure writer thread finishes
-        let _ = handle.join();
 
         assert!(result.is_err(), "atomic_copy_file should fail for FIFO");
         let err = result.unwrap_err();
@@ -1067,7 +1067,16 @@ fn file_handler(
             }
             f
         } else {
-            match File::open(&info.path) {
+            let mut options = fs::OpenOptions::new();
+            options.read(true);
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32);
+            }
+
+            match options.open(&info.path) {
                 Ok(f) => f,
                 Err(e) => {
                     report_error(

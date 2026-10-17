@@ -27,3 +27,8 @@
 **Vulnerability:** Error strings passed to `report_error` and `ScanError` were forwarded directly to the TUI and text-mode displays without sanitization. An attacker could craft filenames or EXIF metadata containing ANSI escape codes that, when reflected in error messages (e.g. template errors, system I/O errors), allowed terminal manipulation.
 **Learning:** Sanitizing direct path outputs is insufficient if error wrappers or exception messages embed unsanitized user strings.
 **Prevention:** Explicitly sanitize error strings using `paths::sanitize_str` within `report_error` and `ScanError` before dispatching to UI components.
+
+## 2026-06-08 - DoS Vulnerability via FIFOs in Source File Readers
+**Vulnerability:** The `file_processor` and `file_handler` workers opened source files using the blocking `File::open` function. An attacker could exploit a TOCTOU race condition by replacing a discovered file with a FIFO before it was processed, causing the worker threads to block indefinitely and creating a Denial of Service.
+**Learning:** The FIFO blocking DoS vulnerability pattern is not limited to destination files (like in `compare_file`), but also applies to source file readers. All file opens in the pipeline must use `O_NONBLOCK` and `fstat` to prevent hangs.
+**Prevention:** Use `fs::OpenOptions` with `O_NONBLOCK` on Unix systems when opening source files in `file_processor` and `file_handler`, and verify `meta.is_file()` using `fstat` on the open file handle before performing I/O.
