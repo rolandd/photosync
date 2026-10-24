@@ -394,13 +394,27 @@ fn ui(frame: &mut Frame, app: &App) {
     };
     let elapsed = app.total_time.unwrap_or_else(|| app.start_time.elapsed());
     let time_str = format_duration(elapsed);
-    let stats_text = format!(
+
+    let mut stats_text = format!(
         "Time: {}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
         time_str,
         speed_text,
         progress::format_bytes(app.summary.bytes_copied),
         app.summary.files_skipped
     );
+
+    if app.scan_complete && !app.done && !app.recent_copies.is_empty() {
+        let remaining = app
+            .files_with_exif
+            .saturating_sub(app.summary.total_processed());
+        if remaining > 0 {
+            let total_dur: Duration = app.recent_copies.iter().map(|(_, d)| *d).sum();
+            let avg_dur = total_dur / app.recent_copies.len() as u32;
+            let eta = avg_dur * remaining as u32;
+            stats_text.push_str(&format!("    ETA: {}", format_duration(eta)));
+        }
+    }
+
     let stats_para = Paragraph::new(stats_text).style(Style::default().fg(Color::Gray));
     frame.render_widget(stats_para, chunks[3]);
 
