@@ -9,3 +9,7 @@
 ## 2026-02-18 - Elapsed Time Indicator
 **Learning:** For long-running batch operations, users need a sense of temporal scale to estimate completion or detect hangs.
 **Action:** Display a wall-clock timer (MM:SS) that starts immediately and freezes upon completion.
+
+## 2026-02-18 - Dynamic ETA for TUI Batch Operations
+**Learning:** For long-running batch operations in TUIs, always compute and display a dynamically updating ETA based on recent throughput to reduce user anxiety.
+**Action:** Use recent copies average duration and remaining files dynamically calculated via saturating_sub.

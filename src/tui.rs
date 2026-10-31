@@ -392,11 +392,23 @@ fn ui(frame: &mut Frame, app: &App) {
     } else {
         "-".to_string()
     };
+    let mut eta_text = String::new();
+    if app.scan_complete && !app.done && !app.recent_copies.is_empty() {
+        let total_duration: Duration = app.recent_copies.iter().map(|(_, d)| *d).sum();
+        let avg_duration = total_duration / (app.recent_copies.len() as u32);
+        let remaining = app
+            .files_with_exif
+            .saturating_sub(app.summary.total_processed());
+        let eta = avg_duration * (remaining as u32);
+        eta_text = format!("    ETA: {}", format_duration(eta));
+    }
+
     let elapsed = app.total_time.unwrap_or_else(|| app.start_time.elapsed());
     let time_str = format_duration(elapsed);
     let stats_text = format!(
-        "Time: {}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
+        "Time: {}{}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
         time_str,
+        eta_text,
         speed_text,
         progress::format_bytes(app.summary.bytes_copied),
         app.summary.files_skipped
