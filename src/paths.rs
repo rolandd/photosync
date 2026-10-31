@@ -84,8 +84,7 @@ pub fn sanitize_filename(s: &str) -> String {
 
 /// Checks if the filename is a Windows reserved device name (CON, PRN, etc.)
 fn is_windows_reserved(s: &str) -> bool {
-    // Reserved names are case-insensitive on Windows
-    let upper = s.to_ascii_uppercase();
+    // Reserved names are case-insensitive on Windows.
     // Check for exact match or match with extension (e.g., CON.txt is also invalid)
     // Actually, on Windows, "CON.txt" is invalid, but checking the stem is usually enough.
     // However, the stem check is complex due to multiple dots.
@@ -93,33 +92,28 @@ fn is_windows_reserved(s: &str) -> bool {
 
     // Split by dot to get the stem (first part)
     // Note: Windows treats "CON.txt", "CON.foo.bar", "CON" all as the device CON.
-    let stem = upper.split('.').next().unwrap_or("");
+    let stem = s.split('.').next().unwrap_or("");
+    let len = stem.len();
 
-    matches!(
-        stem,
-        "CON"
-            | "PRN"
-            | "AUX"
-            | "NUL"
-            | "COM1"
-            | "COM2"
-            | "COM3"
-            | "COM4"
-            | "COM5"
-            | "COM6"
-            | "COM7"
-            | "COM8"
-            | "COM9"
-            | "LPT1"
-            | "LPT2"
-            | "LPT3"
-            | "LPT4"
-            | "LPT5"
-            | "LPT6"
-            | "LPT7"
-            | "LPT8"
-            | "LPT9"
-    )
+    // Optimization (Bolt): Use length checks and eq_ignore_ascii_case instead of
+    // to_ascii_uppercase() to avoid allocating a new String for every file processed.
+    if len == 3 {
+        stem.eq_ignore_ascii_case("CON")
+            || stem.eq_ignore_ascii_case("PRN")
+            || stem.eq_ignore_ascii_case("AUX")
+            || stem.eq_ignore_ascii_case("NUL")
+    } else if len == 4 {
+        if stem.is_ascii() {
+            let prefix = &stem[..3];
+            let last = stem.as_bytes()[3];
+            (prefix.eq_ignore_ascii_case("COM") || prefix.eq_ignore_ascii_case("LPT"))
+                && (b'1'..=b'9').contains(&last)
+        } else {
+            false
+        }
+    } else {
+        false
+    }
 }
 
 /// A source file path (input).
