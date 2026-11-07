@@ -142,6 +142,18 @@ impl App {
         self.recent_items.push_front(RecentItem { text, style });
     }
 
+    fn eta(&self) -> Option<Duration> {
+        if !self.scan_complete || self.done || self.recent_copies.is_empty() {
+            return None;
+        }
+        let total_dur: Duration = self.recent_copies.iter().map(|(_, d)| *d).sum();
+        let avg_dur = total_dur / (self.recent_copies.len() as u32);
+        let remaining = self
+            .files_with_exif
+            .saturating_sub(self.summary.total_processed());
+        Some(avg_dur * (remaining as u32))
+    }
+
     /// Calculate speed in bytes per second from recent copies.
     fn speed_bytes_per_sec(&self) -> f64 {
         if self.recent_copies.is_empty() {
@@ -394,12 +406,18 @@ fn ui(frame: &mut Frame, app: &App) {
     };
     let elapsed = app.total_time.unwrap_or_else(|| app.start_time.elapsed());
     let time_str = format_duration(elapsed);
+    let eta_str = if let Some(eta) = app.eta() {
+        format!("    ETA: {}", format_duration(eta))
+    } else {
+        String::new()
+    };
     let stats_text = format!(
-        "Time: {}    Speed: {}    Copied: {}    Skipped: {} (already exist)",
+        "Time: {}    Speed: {}    Copied: {}    Skipped: {} (already exist){}",
         time_str,
         speed_text,
         progress::format_bytes(app.summary.bytes_copied),
-        app.summary.files_skipped
+        app.summary.files_skipped,
+        eta_str
     );
     let stats_para = Paragraph::new(stats_text).style(Style::default().fg(Color::Gray));
     frame.render_widget(stats_para, chunks[3]);
