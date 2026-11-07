@@ -101,13 +101,11 @@ fn is_windows_reserved(s: &str) -> bool {
                 || stem.eq_ignore_ascii_case("AUX")
                 || stem.eq_ignore_ascii_case("NUL")
         }
-        4 if stem.is_ascii() => {
-            if stem[..3].eq_ignore_ascii_case("COM") || stem[..3].eq_ignore_ascii_case("LPT") {
-                let last = stem.as_bytes()[3];
-                (b'1'..=b'9').contains(&last)
-            } else {
-                false
-            }
+        4 if stem.is_ascii()
+            && (stem[..3].eq_ignore_ascii_case("COM") || stem[..3].eq_ignore_ascii_case("LPT")) =>
+        {
+            let last = stem.as_bytes()[3];
+            (b'1'..=b'9').contains(&last)
         }
         _ => false,
     }
