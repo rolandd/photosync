@@ -343,8 +343,8 @@ fn file_processor(
                 return;
             }
 
-            match File::open(&path) {
-                Ok(f) => break f,
+            match open_secure_read(&path) {
+                Ok((f, _meta)) => break f,
                 Err(e) => {
                     if is_too_many_open_files(&e) {
                         // Back-pressure: wait for the handler to free up file descriptors
@@ -513,6 +513,32 @@ fn compute_dest_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn test_open_secure_read_fifo() {
+        use std::process::Command;
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let fifo_path = temp_dir.path().join("test_fifo");
+
+        let status = Command::new("mkfifo")
+            .arg(&fifo_path)
+            .status()
+            .expect("Failed to execute mkfifo");
+        assert!(status.success());
+
+        // Do NOT spawn a background thread. If open_secure_read incorrectly
+        // blocks, the test will correctly hang and time out.
+        let result = open_secure_read(&fifo_path);
+
+        assert!(result.is_err(), "Opening a FIFO should fail");
+        assert_eq!(
+            result.unwrap_err().kind(),
+            io::ErrorKind::InvalidInput,
+            "Should return InvalidInput for non-regular files"
+        );
+    }
     use std::io::{Seek, Write};
     use std::path::Path;
 
@@ -944,6 +970,30 @@ mod tests {
     }
 }
 
+/// Opens a file for reading securely, preventing TOCTOU DoS on special files.
+/// Uses `O_NONBLOCK` on Unix to prevent blocking on FIFOs or device files,
+/// and verifies the file is a regular file using `fstat`.
+fn open_secure_read(path: &Path) -> io::Result<(File, fs::Metadata)> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32);
+    }
+
+    let file = options.open(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Source is not a regular file",
+        ));
+    }
+    Ok((file, meta))
+}
+
 /// Copies a file to a destination, failing if the destination already exists.
 /// This prevents TOCTOU races where a symlink is created at the destination
 /// between the existence check and the copy.
@@ -1055,7 +1105,7 @@ fn file_handler(
 
         // Open source file early to reuse handle and avoid double open/stat
         // Optimization: Reuse the file handle from the processor if available
-        let mut src_file = if let Some(mut f) = info.file.take() {
+        let (mut src_file, src_meta) = if let Some(mut f) = info.file.take() {
             if let Err(e) = f.seek(io::SeekFrom::Start(0)) {
                 report_error(
                     &progress_tx,
@@ -1065,10 +1115,22 @@ fn file_handler(
                 );
                 continue;
             }
-            f
+            let meta = match f.metadata() {
+                Ok(m) => m,
+                Err(e) => {
+                    report_error(
+                        &progress_tx,
+                        info.path.to_string(),
+                        format!("Failed to stat source: {e}"),
+                        &shutdown,
+                    );
+                    continue;
+                }
+            };
+            (f, meta)
         } else {
-            match File::open(&info.path) {
-                Ok(f) => f,
+            match open_secure_read(&info.path) {
+                Ok((f, meta)) => (f, meta),
                 Err(e) => {
                     report_error(
                         &progress_tx,
@@ -1078,20 +1140,6 @@ fn file_handler(
                     );
                     continue;
                 }
-            }
-        };
-
-        // Use fstat (cheap) to get size and check if regular file
-        let src_meta = match src_file.metadata() {
-            Ok(m) => m,
-            Err(e) => {
-                report_error(
-                    &progress_tx,
-                    info.path.to_string(),
-                    format!("Failed to stat source: {e}"),
-                    &shutdown,
-                );
-                continue;
             }
         };
 
